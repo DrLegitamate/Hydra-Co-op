@@ -33,19 +33,15 @@
 // +-----------------------------+
 // | Initialize Input Multiplexer|
 // +-----------------------------+
-//               |
-//               v
-// +-----------------------------+
-// | Detect & Launch Proton Games| // This step is now integrated into Instance Launch
-// +-----------------------------+
+
+// Note: "Detect & Launch Proton Games" is now integrated into Instance Launch
 
 use crate::cli::parse_args;
 use crate::config::{Config, ConfigError}; // Import ConfigError
 use crate::instance_manager::{launch_multiple_game_instances, InstanceManagerError}; // Import InstanceManagerError
 use crate::logging::init as init_logging; // Alias to avoid name conflict if another 'init' exists
 use crate::net_emulator::{NetEmulator, NetEmulatorError}; // Import NetEmulatorError
-// The top-level launch_game from proton_integration is removed/refactored,
-// so we don't import it here anymore. Proton logic is called by instance_manager.
+// proton_integration launch logic is now in instance_manager
 // use crate::proton_integration::launch_game;
 use crate::window_manager::{WindowManager, Layout, WindowManagerError}; // Import WindowManagerError
 use crate::input_mux::{InputMux, InputMuxError, DeviceIdentifier}; // Import InputMuxError and DeviceIdentifier
@@ -57,6 +53,8 @@ use std::time::Duration;
 use std::collections::HashMap; // Import HashMap
 use std::process::Child; // Import Child if needed for instance management
 use std::fs; // Import fs for creating WINEPREFIX base directory
+use log::SetLoggerError; // Import SetLoggerError
+
 
 fn main() {
     // Initialize the logging system first.
@@ -70,20 +68,18 @@ fn main() {
     if debug {
         // Set the RUST_LOG environment variable to enable debug logs
         env::set_var("RUST_LOG", "debug");
-        info!("Debug mode enabled.");
     } else {
         // Set a default logging level (e.g., info) if not already set
-        // env_logger::init() or your init_logging() typically reads RUST_LOG.
-        // If RUST_LOG is not set, init() might default to Error or Info.
-        // To explicitly set info unless RUST_LOG is already set:
         if env::var("RUST_LOG").is_err() {
              env::set_var("RUST_LOG", "info");
         }
-         info!("Info mode enabled.");
     }
 
     // Now initialize the logging system.
-    init_logging(); // Call your logging initialization function
+    match init_logging() {
+        Ok(_) => info!("Logging initialized."),
+        Err(e) => eprintln!("Error initializing logging: {}", e), // Use eprintln as logger might not be fully ready
+    }
 
 
     // Retrieve parsed command-line arguments using clap 4.0+ methods
@@ -161,7 +157,7 @@ fn main() {
         // Example: Use a directory in /tmp or a dedicated app data directory
          let mut dir = env::temp_dir(); // Start with the system's temporary directory
          dir.push("hydra_coop_wineprefixes"); // Add a subdirectory for the application
-         // Consider making this configurable
+         // Consider making this configurable (e.g., via config file or command line)
          info!("Using base directory for WINEPREFIXes: {}", dir.display());
 
          // Ensure the base directory exists
@@ -174,8 +170,7 @@ fn main() {
 
     } else {
         // If not using Proton, the base_wineprefix_dir is not strictly needed
-        // by launch_multiple_game_instances, but we pass a placeholder or
-        // handle this case in instance_manager. Let's pass a dummy path.
+        // by launch_multiple_game_instances, but we pass a dummy path.
         PathBuf::from("/dev/null") // Or a temporary directory that will be ignored
     };
 
@@ -483,7 +478,7 @@ fn main() {
     let r = running.clone();
     ctrlc::set_handler(move || {
         info!("Ctrl+C received. Initiating graceful shutdown.");
-        r.store(Ordering::SeqCst, Ordering::SeqCst); // Use consistent ordering
+        r.store(false, Ordering::SeqCst); // Use consistent ordering
     }).expect("Error setting Ctrl-C handler");
 
     // Wait until Ctrl+C is pressed
