@@ -18,7 +18,7 @@ mod net_emulator;
 /// # Returns
 ///
 /// * `Result<Child, io::Error>` - A Result containing the handle to the child process or an error if the process fails to start.
-pub fn launch_game_instance(executable_path: String, working_directory: &Path) -> Result<Child, io::Error> {
+pub fn launch_game_instance(executable_path: &Path, working_directory: &Path) -> Result<Child, io::Error> {
     // Log the start of the game instance launch
     info!("Launching game instance with executable: {}", executable_path);
 
