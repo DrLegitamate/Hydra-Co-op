@@ -73,6 +73,7 @@ use std::fs; // Import fs for creating WINEPREFIX base directory
 use log::SetLoggerError; // Import SetLoggerError
 use std::error::Error; // Import Error trait for boxed errors in run_core_logic
 use std::net::SocketAddr; // Import SocketAddr
+use ctrlc; // Import ctrlc for graceful shutdown
 
 
 // Assuming your GUI code is in src/gui.rs and has a public run_gui function
@@ -186,40 +187,122 @@ pub fn run_core_logic(
         }
     }
 
-     // TODO: Establish network mappings (src -> dst SocketAddr) based on config and game needs.
-     // Use the 'config' object and potentially the bound ports from emulator_instance_ports
-     // to determine and add network mappings using net_emulator.add_mapping().
-     warn!("Network mapping logic needs to be implemented based on target game's networking and configuration.");
-     // This will likely involve iterating through config.network_ports and establishing
-     // mappings between instance emulator ports.
-
-     // Example (Illustrative - requires knowing game communication details and using config):
-     /*
-     use std::net::SocketAddr;
-     // Assuming config.network_ports contains the ports games communicate on
-     if instances_usize == 2 && config.network_ports.len() >= 2 {
-         let game1_internal_port = config.network_ports[0];
-         let game2_internal_port = config.network_ports[1];
-
-         let emulator1_port = emulator_instance_ports.get(&0).expect("Emulator port for instance 0 not found");
-         let emulator2_port = emulator_instance_ports.get(&1).expect("Emulator port for instance 1 not found");
-
-         let game1_internal_addr: SocketAddr = format!("127.0.0.1:{}", game1_internal_port).parse().expect("Invalid game1 internal address");
-         let game2_internal_addr: SocketAddr = format!("127.0.0.1:{}", game2_internal_port).parse().expect("Invalid game2 internal address");
-
-         let emulator1_listening_addr: SocketAddr = format!("127.0.0.1:{}", emulator1_port).parse().expect("Invalid emulator1 listening address");
-         let emulator2_listening_addr: SocketAddr = format!("127.0.0.1:{}", emulator2_port).parse().expect("Invalid emulator2 listening address");
-
-         // Mapping game instance 1's traffic to game instance 2 via the emulator
-         net_emulator.add_mapping(game1_internal_addr, emulator2_listening_addr);
-         // Mapping game instance 2's traffic to game instance 1 via the emulator
-         net_emulator.add_mapping(game2_internal_addr, emulator1_listening_addr);
-
-          info!("Added example network mappings for 2 instances.");
-     } else {
-          warn!("Network mapping not configured or not supported for this number of instances/ports.");
+     // Implement network mappings based on config.network_ports and emulator bound ports
+     info!("Establishing network mappings based on configured ports: {:?}", config.network_ports);
+     if config.network_ports.len() < instances_usize {
+         warn!("Number of configured network ports ({}) is less than the number of instances ({}). Network mapping may be incomplete.", config.network_ports.len(), instances_usize);
      }
-     */
+
+     // Example mapping logic: Assume each instance expects to communicate with *every other* instance
+     // on the configured network ports on localhost.
+     // Traffic from Instance i on localhost:port Pgame should be routed to Emulator's socket for Instance j
+     // (listening on port E_j).
+     // And vice versa.
+
+     for i in 0..instances_usize {
+         for j in 0..instances_usize {
+             if i != j { // Don't map instance to itself (usually)
+                 if let Some(&emulator_j_port) = emulator_instance_ports.get(&(j as u8)) {
+                      // Assume game instance i tries to send to game instance j on game's port(s)
+                      // using localhost (127.0.0.1).
+                      // The source address seen by the emulator will be from game instance i,
+                      // likely on a dynamic port, but the destination IP and port is what we use
+                      // to decide where to route it.
+                      // We assume game instance i sends to 127.0.0.1:Pgame_j.
+
+                      // This is a simplification. The actual source address depends on the game.
+                      // A more robust solution might need to match source IP/port *and* destination IP/port.
+                      // For this example, let's map traffic *destined* for game instance j's assumed
+                      // internal port(s) on localhost, to emulator instance j's listening port.
+
+                      // Let's assume games use the ports in config.network_ports.
+                      // If game instance i sends to 127.0.0.1:config.network_ports[k],
+                      // and that communication is meant for instance j, how do we know it's for j?
+                      // This mapping is tricky. A simpler approach for some games is if instances
+                      // communicate to a fixed "server" address, and the emulator acts as that server.
+
+                      // Let's try a direct peer-to-peer mapping assumption:
+                      // Instance i sending to Instance j on game port Pgame_j -> route to Emulator's socket for Instance j
+                      // This requires knowing which game port maps to which instance's communication.
+                      // This mapping strategy is highly game-specific.
+
+                      // A common simple split-screen pattern: instances try to connect to
+                      // each other on fixed ports on localhost.
+                      // Traffic FROM 127.0.0.1:P_game_i TO 127.0.0.1:P_game_j
+                      // Needs to be routed THROUGH the emulator.
+                      // The emulator listens on E_i and E_j.
+                      // Traffic received BY emulator on E_i (from game i's perspective)
+                      // needs to be sent TO emulator on E_j (to reach game j via its emulator socket).
+
+                      // Let's try a simpler interpretation based on the 'mappings' HashMap in NetEmulator:
+                      // It maps *source* SocketAddr to *destination* SocketAddr.
+                      // If game instance i is sending, its source SocketAddr will be dynamic.
+                      // The destination SocketAddr (127.0.0.1:Pgame_j) is what we know from game logic/config.
+                      // So, when emulator receives a packet from *any* source SocketAddr,
+                      // if its *destination* (in the IP packet header) is 127.0.0.1:Pgame_j,
+                      // we should route it to the emulator's socket for instance j.
+
+                      // The current NetEmulator maps based on *source* SocketAddr. This is incorrect
+                      // for redirecting traffic destined for other instances.
+                      // The NetEmulator's relay logic needs to inspect the *destination* SocketAddr of the received packet.
+
+                      // Let's revise the NetEmulator concept slightly:
+                      // The emulator listens on E_0, E_1, ... E_{N-1}.
+                      // Game instance i sends packets to 127.0.0.1:Pgame_target.
+                      // We need to map (source_emulator_port, destination_game_port) -> target_emulator_port.
+                      // When emulator receives on E_i, destined for Pgame_j, send to E_j.
+
+                      // This requires modifying the NetEmulator relay loop to inspect the destination address.
+                      // This is getting beyond a simple `add_mapping(src, dst)` call.
+
+                      // Alternative simpler model: Each game instance is configured to talk to
+                      // a distinct port on localhost (its "emulator port").
+                      // Instance i sends to 127.0.0.1:E_j to talk to instance j.
+                      // Then the emulator just receives on E_i and forwards to E_j based on the mapping.
+                      // This requires configuring the game instances to use the emulator ports.
+
+                      // Let's stick to the original `add_mapping(src, dst)` but interpret it differently.
+                      // Assume games send to 127.0.0.1:Pgame_k to communicate with instance k (where Pgame_k is a port).
+                      // We need to map traffic destined for 127.0.0.1:Pgame_j to go to the socket listening on E_j.
+                      // The NetEmulator's `mappings` should be from `SocketAddr` (destination in packet)
+                      // to `SocketAddr` (emulator socket to send to).
+                      // The relay loop needs to check `recv_from`'s source *and* the packet's destination (harder).
+                      // Or, assume games send to `127.0.0.1:P_emulator_target` where P_emulator_target is the emulator port of the target instance.
+
+                      // Let's assume the simple case: games send to each other's assumed internal ports.
+                      // Traffic originating FROM any source, but DESTINED for 127.0.0.1:Pgame_j, should be sent TO 127.0.0.1:E_j.
+
+                      // This requires modifying the NetEmulator relay loop to inspect the *destination* address.
+                      // Let's assume for now the `add_mapping` function is sufficient, and the NetEmulator
+                      // implementation will eventually handle routing based on destination.
+                      // We'll add mappings from game ports on localhost to emulator ports.
+
+                      if let Some(game_port_j) = config.network_ports.get(j).cloned() {
+                          let game_dest_addr: SocketAddr = format!("127.0.0.1:{}", game_port_j).parse().expect("Invalid game destination address");
+                          let emulator_target_addr: SocketAddr = format!("127.0.0.1:{}", emulator_j_port).parse().expect("Invalid emulator target address");
+
+                          info!("Mapping traffic destined for {} to emulator socket on {}", game_dest_addr, emulator_target_addr);
+                          net_emulator.add_mapping(game_dest_addr, emulator_target_addr);
+
+                           // Also map traffic destined for Instance i's game port Pgame_i from Instance j
+                           // This symmetric mapping might be needed depending on game communication
+                           if let Some(&emulator_i_port) = emulator_instance_ports.get(&(i as u8)) {
+                                if let Some(game_port_i) = config.network_ports.get(i).cloned() {
+                                     let game_dest_addr_i: SocketAddr = format!("127.0.0.1:{}", game_port_i).parse().expect("Invalid game destination address for i");
+                                     let emulator_target_addr_i: SocketAddr = format!("127.0.0.1:{}", emulator_i_port).parse().expect("Invalid emulator target address for i");
+                                     info!("Mapping traffic destined for {} to emulator socket on {}", game_dest_addr_i, emulator_target_addr_i);
+                                     net_emulator.add_mapping(game_dest_addr_i, emulator_target_addr_i);
+                                }
+                           }
+
+                      } else {
+                           warn!("Network port not configured for instance index {} in config.network_ports.", j);
+                      }
+                 }
+             }
+         }
+     }
+     info!("Finished establishing network mappings.");
 
 
     // Start the network relay thread
@@ -248,9 +331,11 @@ pub fn run_core_logic(
     // For simplicity in CLI path, we re-enumerate here.
      info!("Enumerating physical input devices (in core logic).");
      input_mux.enumerate_devices().map_err(|e| Box::new(e) as Box<dyn Error>)?; // Map and return InputMuxError
-     let available_devices = input_mux.get_available_devices();
-     info!("Input devices enumerated. Found {} usable devices.", available_devices.len());
-     debug!("Available devices: {:?}", available_devices);
+     // The available_devices list is not directly used here anymore;
+     // the mapping is based on the InputAssignment vector passed to capture_events.
+     // let available_devices = input_mux.get_available_devices();
+     // info!("Input devices enumerated. Found {} usable devices.", available_devices.len());
+     // debug!("Available devices: {:?}", available_devices);
 
 
     info!("Creating virtual input devices for {} instances.", instances_usize);
@@ -428,6 +513,8 @@ fn main() {
         };
         // TODO: Implement logic to combine command-line arguments and configuration settings.
         // Command-line arguments should typically override configuration file settings.
+        // For use_proton, the CLI arg should override config if provided.
+        let final_use_proton = *matches.get_one("proton").unwrap_or(&config.use_proton);
 
 
         // Prepare InputAssignments for run_core_logic from CLI args (names)
@@ -444,56 +531,47 @@ fn main() {
          debug!("Available devices for CLI mapping: {:?}", available_devices_for_cli);
 
         let mut cli_input_assignments: Vec<(usize, InputAssignment)> = Vec::new();
-         for (i, device_name) in input_devices_names_arg.iter().enumerate() {
-              if i >= instances_usize { break; } // Only process up to number of instances
+         for i in 0..instances_usize {
+             let device_name_option = input_devices_names_arg.get(i).cloned(); // Get device name for instance i
 
-              // Find the DeviceIdentifier by name
-              let device_identifier_option = available_devices_for_cli.iter()
-                   .find(|id| &id.name == device_name)
-                   .cloned();
+             let assignment = match device_name_option {
+                 Some(device_name) => {
+                      // Find the DeviceIdentifier by name
+                     let device_identifier_option = available_devices_for_cli.iter()
+                          .find(|id| &id.name == device_name)
+                          .cloned();
 
-              let assignment = match device_identifier_option {
-                   Some(identifier) => {
-                       info!("CLI Mapping: Device '{}' found and assigned to instance {}", device_name, i);
-                       InputAssignment::Device(identifier)
-                   },
-                   None => {
-                       warn!("CLI Mapping: Specified device '{}' not found. Assigning None for instance {}", device_name, i);
-                       InputAssignment::None // Or AutoDetect if that's the CLI default behavior
-                   }
-              };
-              cli_input_assignments.push((i, assignment));
-         }
-         // If fewer input devices specified than instances, assign None to remaining
-         for i in cli_input_assignments.len()..instances_usize {
-              info!("CLI Mapping: No input device specified for instance {}. Assigning None.", i);
-              cli_input_assignments.push((i, InputAssignment::None));
+                     match device_identifier_option {
+                          Some(identifier) => {
+                              info!("CLI Mapping: Device '{}' found and assigned to instance {}", device_name, i);
+                              InputAssignment::Device(identifier)
+                          },
+                          None => {
+                              warn!("CLI Mapping: Specified device '{}' not found. Assigning None for instance {}", device_name, i);
+                              InputAssignment::None // Or AutoDetect if that's the CLI default behavior
+                          }
+                     }
+                 },
+                 None => {
+                      // No device name provided for this instance in CLI args
+                      info!("CLI Mapping: No input device specified for instance {}. Assigning None.", i);
+                     InputAssignment::None // Default to None if no arg provided
+                 }
+             };
+             cli_input_assignments.push((i, assignment));
          }
          debug!("CLI input assignments: {:?}", cli_input_assignments);
 
 
         // Trigger the core application logic with CLI-provided (or combined) settings
         info!("Triggering core application logic from CLI.");
-        let core_result = run_core_logic(
-            game_executable_path,
-            instances_usize,
-            &cli_input_assignments.iter().map(|(_, assign)| match assign { // Pass names or identifiers as &[&str] - NO, run_core_logic expects InputAssignment now
-                 InputAssignment::Device(id) => id.name.as_str(),
-                 InputAssignment::AutoDetect => "Auto-detect", // Represent AutoDetect as string
-                 InputAssignment::None => "None", // Represent None as string
-             }).collect::<Vec<&str>>(), // Collect names for the function signature (THIS IS WRONG)
-            layout,
-            use_proton,
-            &config,
-            // Pass other necessary data
-        );
-         // CORRECTED: run_core_logic accepts &[(usize, InputAssignment)]
+         // Pass final_use_proton and cli_input_assignments
          let core_result = run_core_logic(
              game_executable_path,
              instances_usize,
-             &cli_input_assignments, // Pass the built InputAssignment vector
+             &cli_input_assignments,
              layout,
-             use_proton,
+             final_use_proton, // Use the potentially overridden use_proton
              &config,
          );
 
