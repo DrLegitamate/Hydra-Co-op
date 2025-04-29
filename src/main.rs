@@ -36,25 +36,27 @@
 //               |
 //               v
 // +-----------------------------+
-// | Detect & Launch Proton Games|
+// | Detect & Launch Proton Games| // This step is now integrated into Instance Launch
 // +-----------------------------+
 
 use crate::cli::parse_args;
 use crate::config::{Config, ConfigError}; // Import ConfigError
-use crate::instance_manager::launch_multiple_game_instances;
+use crate::instance_manager::{launch_multiple_game_instances, InstanceManagerError}; // Import InstanceManagerError
 use crate::logging::init as init_logging; // Alias to avoid name conflict if another 'init' exists
 use crate::net_emulator::{NetEmulator, NetEmulatorError}; // Import NetEmulatorError
-use crate::proton_integration::launch_game; // Assuming Proton integration module exists
+// The top-level launch_game from proton_integration is removed/refactored,
+// so we don't import it here anymore. Proton logic is called by instance_manager.
+// use crate::proton_integration::launch_game;
 use crate::window_manager::{WindowManager, Layout, WindowManagerError}; // Import WindowManagerError
 use crate::input_mux::{InputMux, InputMuxError, DeviceIdentifier}; // Import InputMuxError and DeviceIdentifier
 use std::{env, thread};
 use log::{info, error, warn, debug}; // Import warn and debug for consistency
-use std::path::Path;
+use std::path::{Path, PathBuf}; // Import Path and PathBuf
 use clap::ArgMatches; // Import ArgMatches
 use std::time::Duration;
 use std::collections::HashMap; // Import HashMap
 use std::process::Child; // Import Child if needed for instance management
-
+use std::fs; // Import fs for creating WINEPREFIX base directory
 
 fn main() {
     // Initialize the logging system first.
@@ -153,16 +155,64 @@ fn main() {
     // You can now use the 'config' object. It will either be loaded from the file or the default.
 
 
+    // Determine the base directory for WINEPREFIXes if using Proton.
+    // This could be a temporary directory, a configured path, or derived from the game path.
+    let base_wineprefix_dir = if use_proton {
+        // Example: Use a directory in /tmp or a dedicated app data directory
+         let mut dir = env::temp_dir(); // Start with the system's temporary directory
+         dir.push("hydra_coop_wineprefixes"); // Add a subdirectory for the application
+         // Consider making this configurable
+         info!("Using base directory for WINEPREFIXes: {}", dir.display());
+
+         // Ensure the base directory exists
+         if let Err(e) = fs::create_dir_all(&dir) {
+              error!("Failed to create base WINEPREFIX directory {}: {}", dir.display(), e);
+              // This is a fatal error if we need to create WINEPREFIXes
+              std::process::exit(1);
+         }
+         dir
+
+    } else {
+        // If not using Proton, the base_wineprefix_dir is not strictly needed
+        // by launch_multiple_game_instances, but we pass a placeholder or
+        // handle this case in instance_manager. Let's pass a dummy path.
+        PathBuf::from("/dev/null") // Or a temporary directory that will be ignored
+    };
+
+
     // Launch the required number of game instances
+    // Pass the use_proton flag and the base_wineprefix_dir to instance_manager
     info!("Launching {} game instances using executable: {}", instances_usize, game_executable_path.display());
-    let mut game_instances = match launch_multiple_game_instances(game_executable_path, instances_usize) {
+    let mut game_instances = match launch_multiple_game_instances(
+        game_executable_path,
+        instances_usize,
+        use_proton,
+        &base_wineprefix_dir,
+    ) {
         Ok(children) => {
             info!("Successfully launched {} game instances.", children.len());
             children
         }
         Err(e) => {
-            error!("Failed to launch game instances: {}", e);
-            std::process::exit(1);
+            // Handle specific InstanceManager errors
+            match e {
+                InstanceManagerError::ProtonPathNotFound => {
+                    error!("Failed to launch game instances: Proton was requested but not found. Please ensure Proton is installed and accessible.");
+                }
+                InstanceManagerError::ProtonError(proton_e) => {
+                     error!("Failed to launch game instances due to Proton error: {}", proton_e);
+                }
+                InstanceManagerError::IoError(io_e) => {
+                    error!("Failed to launch game instances due to I/O error: {}", io_e);
+                }
+                 InstanceManagerError::WindowsBinaryCheckError(check_e) => {
+                      error!("Failed to launch game instances due to Windows binary check error: {}", check_e);
+                 }
+                InstanceManagerError::GenericError(msg) => {
+                    error!("Failed to launch game instances: {}", msg);
+                }
+            }
+            std::process::exit(1); // Exit on instance launch failure
         }
     };
 
@@ -189,6 +239,15 @@ fn main() {
     for (i, instance) in game_instances.iter().enumerate() {
         let emulator_instance_id = i as u8; // Using 0-based index as emulator instance ID
         let pid = instance.id(); // Get the PID of the launched process
+
+        // Check if the emulator_instance_id is within the u8 range if required by add_instance
+         if emulator_instance_id as u32 != i as u32 { // Check for overflow if i is large
+              error!("Instance index {} exceeds u8 capacity for emulator ID. Cannot add to network emulator.", i);
+              // Decide if this is a fatal error or if the application can continue
+              // with fewer instances in the network emulator. For now, log and skip.
+              continue;
+         }
+
 
         match net_emulator.add_instance(emulator_instance_id) {
             Ok(bound_port) => {
@@ -400,37 +459,6 @@ fn main() {
     info!("Input event capture started. Background threads are running.");
 
 
-    // If necessary, detect and launch Windows games via Proton
-    // This block's placement and logic need careful consideration.
-    // If launch_game is meant to wrap the original executable launch with Proton,
-    // this should likely happen earlier, perhaps within or called by instance_manager.
-    if use_proton {
-         info!("Proton flag is set. Executing Proton launch logic.");
-         // The current loop structure below would try to launch the *same* game_executable
-         // with Proton for *each* already launched instance (represented by its Child process handle),
-         // which is probably not the intended behavior.
-         // The Proton integration should likely manage how the game is launched *per instance*.
-         // This might involve setting up environment variables and calling Proton before the
-         // actual game executable is spawned in instance_manager.
-        /*
-        // This loop is likely incorrect in its current location and logic
-        for instance in game_instances {
-            // Assuming launch_game takes the path to the Windows executable
-            // and handles the Proton environment setup.
-            // This needs to be integrated with the per-instance logic.
-            match launch_game(&game_executable_path) {
-                Ok(_) => info!("Attempted to launch game with Proton."),
-                Err(e) => error!("Failed to launch game with Proton: {}", e),
-                 // Decide if a Proton launch failure for one instance is fatal for all.
-                 // For now, we log and continue the loop (if the loop was correct).
-                 // std::process::exit(1); // Exiting here would stop the whole application on first Proton launch failure
-            }
-        }
-        */
-         warn!("Proton integration block in main.rs is currently a placeholder and its logic needs to be correctly implemented and placed within the application flow (likely related to instance launching).");
-    }
-
-
     // The main thread needs to stay alive to keep the background threads
     // (input capture, network emulator) running.
     // If you had a GUI, its event loop would go here.
@@ -455,7 +483,7 @@ fn main() {
     let r = running.clone();
     ctrlc::set_handler(move || {
         info!("Ctrl+C received. Initiating graceful shutdown.");
-        r.store(false, Ordering::SeqCst);
+        r.store(Ordering::SeqCst, Ordering::SeqCst); // Use consistent ordering
     }).expect("Error setting Ctrl-C handler");
 
     // Wait until Ctrl+C is pressed
@@ -466,7 +494,27 @@ fn main() {
     info!("Shutdown sequence started. Waiting for background tasks...");
     // Here, you would signal your background threads (input_mux, net_emulator) to stop
     // and then wait for them to join.
-    // (Requires modification to capture_events and NetEmulator to return JoinHandles).
+    // (Requires modification to capture_events and NetEmulator to return JoinHandles
+    // and accept stop signals in their threads).
+
+    // For example, if NetEmulator::start_relay returned a JoinHandle and stop_relay worked:
+    // if let Some(net_emulator_thread) = net_emulator.relay_thread.take() { // Requires relay_thread to be public or have a getter
+    //      if let Err(e) = net_emulator.stop_relay() { // Assuming stop_relay is still needed for signaling
+    //           error!("Error stopping network relay: {}", e);
+    //      }
+    //      match net_emulator_thread.join() {
+    //           Ok(thread_result) => {
+    //                if let Err(e) = thread_result {
+    //                     error!("Network relay thread finished with error: {}", e);
+    //                } else {
+    //                     info!("Network relay thread joined successfully.");
+    //                }
+    //           }
+    //           Err(e) => error!("Network relay thread panicked: {:?}", e),
+    //      }
+    // }
+
+    // Similar logic for InputMux capture threads if they returned JoinHandles
 
     info!("Background tasks finished. Exiting.");
     */
