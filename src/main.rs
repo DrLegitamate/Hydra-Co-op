@@ -40,202 +40,380 @@
 // +-----------------------------+
 
 use crate::cli::parse_args;
-use crate::config::Config;
+use crate::config::Config; // Assuming Config module exists and has a load function
 use crate::instance_manager::launch_multiple_game_instances;
-use crate::logging::init;
-use crate::net_emulator::NetEmulator;
-use crate::proton_integration::launch_game;
-use crate::window_manager::{WindowManager, Layout}; // Import Layout enum
-use crate::input_mux::InputMux;
+use crate::logging::init as init_logging; // Alias to avoid name conflict if another 'init' exists
+use crate::net_emulator::NetEmulator; // Assuming NetEmulator module exists
+use crate::proton_integration::launch_game; // Assuming Proton integration module exists
+use crate::window_manager::{WindowManager, Layout, WindowManagerError}; // Import WindowManagerError
+use crate::input_mux::{InputMux, InputMuxError, DeviceIdentifier}; // Import InputMuxError and DeviceIdentifier
 use std::env;
-use log::{info, error}; // Import error for consistent error reporting
-use std::path::Path; // Import Path
+use log::{info, error, warn}; // Import warn for consistency
+use std::path::Path;
+use clap::ArgMatches; // Import ArgMatches
 
 fn main() {
-    // Initialize the logging system
-    // This should ideally be done once at the very beginning.
-    // The env::set_var("RUST_LOG", ...) calls below are redundant
-    // if the logging is already initialized based on environment variables
-    // or a default level in the init() function.
-    init();
+    // Initialize the logging system first.
+    // Configure the log level based on environment variables (e.g., RUST_LOG)
+    // before calling init_logging().
+    // The 'debug' command-line flag can set the RUST_LOG environment variable.
+    let matches: ArgMatches = parse_args(); // Parse args early to check for debug flag
 
-    // Parse command-line arguments
-    let matches = parse_args();
+    let debug: bool = *matches.get_one("debug").unwrap_or(&false); // Get the debug flag
 
-    let game_executable_str = matches.value_of("game_executable").expect("game_executable argument missing");
+    if debug {
+        // Set the RUST_LOG environment variable to enable debug logs
+        env::set_var("RUST_LOG", "debug");
+        info!("Debug mode enabled.");
+    } else {
+        // Set a default logging level (e.g., info) if not already set
+        // env_logger::init() or your init_logging() typically reads RUST_LOG.
+        // If RUST_LOG is not set, init() might default to Error or Info.
+        // To explicitly set info unless RUST_LOG is already set:
+        if env::var("RUST_LOG").is_err() {
+             env::set_var("RUST_LOG", "info");
+        }
+         info!("Info mode enabled.");
+    }
+
+    // Now initialize the logging system.
+    init_logging(); // Call your logging initialization function
+
+
+    // Retrieve parsed command-line arguments using clap 4.0+ methods
+    let game_executable_str: &String = matches.get_one("game_executable").expect("game_executable argument missing");
     let game_executable_path = Path::new(game_executable_str);
 
-    let instances = matches.value_of("instances").expect("instances argument missing").parse::<usize>().expect("Invalid value for instances");
-    let input_devices = matches.values_of("input_devices").map(|values| values.collect::<Vec<&str>>()).unwrap_or_else(Vec::new); // Handle case where input_devices might not be provided
-    let layout_str = matches.value_of("layout").expect("layout argument missing");
-    let layout = Layout::from(layout_str); // Use the From implementation for Layout
-    let debug = matches.is_present("debug");
-    let use_proton = matches.is_present("proton"); // More descriptive variable name
+    let instances: u32 = *matches.get_one("instances").expect("instances argument missing");
+    let instances_usize = instances as usize; // Convert to usize for collection sizes, loops, etc.
 
-    // Setting log level based on debug flag.
-    // Ensure init() allows overriding with environment variables.
-    if debug {
-        env::set_var("RUST_LOG", "debug");
-    } else {
-        env::set_var("RUST_LOG", "info");
-    }
-    // Re-initialize logging after setting the variable, or ensure init() reads the variable after it's set.
-    // A better approach might be to configure env_logger based on the 'debug' flag *before* calling init().
-    // For now, assuming init() is flexible or called after env::set_var.
-    // env_logger::builder().filter_level(...).init(); // Alternative if init() is not flexible
+    // input_devices is collected as Vec<String> by default with ArgAction::Append in cli.rs
+    // Collect it as Vec<&str> here for consistency with your original main.rs logic.
+    let input_devices_arg: Vec<&str> = matches.get_many::<String>("input_devices")
+        .expect("input_devices argument missing")
+        .map(|s| s.as_str()) // Map &String to &str
+        .collect();
+
+    let layout_str: &String = matches.get_one("layout").expect("layout argument missing");
+    let layout = Layout::from(layout_str.as_str()); // Use the From implementation for Layout
+
+    let use_proton: bool = *matches.get_one("proton").unwrap_or(&false); // Assuming 'proton' is a boolean flag
 
 
-    info!("Game Executable: {}", game_executable_path.display());
-    info!("Number of Instances: {}", instances);
-    info!("Input Devices: {:?}", input_devices);
-    info!("Layout: {:?}", layout); // Use Debug print for Layout
-    info!("Debug Mode: {}", debug);
-    info!("Using Proton: {}", use_proton);
+    info!("Application started with the following arguments:");
+    info!("  Game Executable: {}", game_executable_path.display());
+    info!("  Number of Instances: {}", instances_usize);
+    info!("  Input Devices: {:?}", input_devices_arg);
+    info!("  Layout: {:?}", layout); // Use Debug print for Layout
+    info!("  Debug Mode: {}", debug);
+    info!("  Using Proton: {}", use_proton);
 
 
     // Load user configuration
     let config_path_str = env::var("CONFIG_PATH").unwrap_or_else(|_| "config.toml".to_string());
     let config_path = Path::new(&config_path_str);
-    let config = Config::load(config_path).unwrap_or_else(|e| {
-        // Use error! macro for consistency
-        error!("Failed to load configuration from {}: {}", config_path.display(), e);
-        std::process::exit(1);
-    });
-    info!("Configuration loaded from {}", config_path.display());
+    info!("Attempting to load configuration from {}", config_path.display());
+    let config = match Config::load(config_path) {
+        Ok(cfg) => {
+            info!("Configuration loaded successfully.");
+            cfg
+        }
+        Err(e) => {
+            error!("Failed to load configuration from {}: {}", config_path.display(), e);
+            // Decide if failure to load config is fatal. Often, you'd proceed with defaults
+            // or exit if config is mandatory. Original code exited, so we'll keep that pattern.
+            std::process::exit(1);
+        }
+    };
+    // You can now use the 'config' object for settings not provided by command line.
 
 
     // Launch the required number of game instances
-    let game_instances = launch_multiple_game_instances(game_executable_path, instances).unwrap_or_else(|e| {
-        error!("Failed to launch game instances: {}", e);
-        std::process::exit(1);
-    });
-    info!("Launched {} game instances.", game_instances.len());
+    info!("Launching {} game instances using executable: {}", instances_usize, game_executable_path.display());
+    let mut game_instances = match launch_multiple_game_instances(game_executable_path, instances_usize) {
+        Ok(children) => {
+            info!("Successfully launched {} game instances.", children.len());
+            children
+        }
+        Err(e) => {
+            error!("Failed to launch game instances: {}", e);
+            std::process::exit(1);
+        }
+    };
 
     // Note: At this point, the game processes are started, but their windows
     // might not be immediately available. The window manager needs to wait
-    // for the windows to be created and mapped before attempting to
-    // manipulate them. The current window_manager::set_layout includes a basic
-    // retry mechanism, but a more robust solution might be needed.
+    // for the windows to be created and become visible before attempting to
+    // manipulate them. The window_manager::set_layout includes a basic
+    // retry mechanism, but for robustness, consider a more sophisticated
+    // waiting strategy (e.g., polling with increasing delays or listening for X11 events).
 
 
     // Set up the virtual network emulator to connect these instances
-    // Assuming NetEmulator::new() and its methods handle their own errors internally
-    let mut net_emulator = NetEmulator::new();
+    let mut net_emulator = NetEmulator::new(); // Assuming NetEmulator::new() is fallible or returns a Result
     info!("Initializing network emulator.");
-    for (i, instance) in game_instances.iter().enumerate() {
-        // Assuming instance.id() returns the process ID (PID)
-        // The network emulator might need the PID to associate network traffic
-        // with specific instances.
-         if let Err(e) = net_emulator.add_instance(instance.id() as u8) { // Assuming add_instance takes a u8 identifier
-             error!("Failed to add instance {} (PID: {}) to net emulator: {}", i, instance.id(), e);
+    // Assuming NetEmulator::add_instance needs a unique identifier for each instance.
+    // Using the process PID is a common approach.
+    for instance in game_instances.iter() {
+        let pid = instance.id();
+        // Assuming add_instance takes the PID or a derivative as u8.
+        // If PIDs exceed u8 max, you'll need a different identifier or adjust NetEmulator.
+         if pid > 255 {
+             warn!("Process PID {} exceeds u8 capacity. Cannot add to network emulator with u8 ID. Adjusting or handling in NetEmulator.", pid);
+             // Decide how to handle large PIDs for the network emulator.
+             // For now, let's skip adding this instance to the emulator and log a warning.
+             continue;
+         }
+         if let Err(e) = net_emulator.add_instance(pid as u8) { // Assuming add_instance takes a u8 identifier
+             error!("Failed to add instance (PID: {}) to net emulator: {}", pid, e);
              // Decide if this failure should be fatal or if the application can continue
-             // with fewer instances in the network emulator.
-             // For now, let's continue but log the error.
+             // with fewer instances in the network emulator. Logging and continuing might be acceptable.
          }
     }
     // Assuming start_relay handles errors internally or returns a Result
     info!("Starting network emulator relay.");
+    // Check if start_relay returns a Result and handle it if necessary.
     net_emulator.start_relay(); // Assuming this is a non-blocking or background operation
 
 
     // Adjust the windows using the window management module to arrange them
     // in the selected split-screen layout.
     // This requires finding the windows associated with the launched processes.
-    let window_manager = WindowManager::new().unwrap_or_else(|e| {
-        error!("Failed to initialize window manager: {}", e);
-        std::process::exit(1);
-    });
-    info!("Window manager initialized.");
+    let window_manager = match WindowManager::new() {
+        Ok(wm) => {
+            info!("Window manager initialized successfully.");
+            wm
+        }
+        Err(e) => {
+            error!("Failed to initialize window manager: {}", e);
+            // Window management is crucial for split-screen. This is likely fatal.
+            std::process::exit(1);
+        }
+    };
 
-    // Collect the PIDs of the launched game instances
+    // Collect the PIDs of the launched game instances for the window manager
     let game_instance_pids: Vec<u32> = game_instances.iter().map(|instance| instance.id()).collect();
+    info!("Attempting to set window layout for PIDs: {:?}", game_instance_pids);
+
 
     // Set the layout for the windows corresponding to the launched PIDs
     if let Err(e) = window_manager.set_layout(&game_instance_pids, layout) {
-         error!("Failed to set window layout: {}", e);
-         // Decide if this failure is fatal. The games are launched, but windows aren't arranged.
-         // For a launcher, this might be a non-fatal error allowing the user to manually arrange.
-         // For now, we exit as per the original code's pattern.
-         std::process::exit(1);
+         // Use match for more specific error handling if needed
+         match e {
+             WindowManagerError::WindowNotFound => {
+                 error!("Failed to set window layout: One or more game windows were not found after launch.");
+                 // Decide if this is a fatal error. The games are running, but not arranged.
+                 // You might inform the user and exit, or inform and let them manually arrange.
+                 std::process::exit(1); // Keeping the exit pattern from original code
+             }
+             WindowManagerError::MonitorDetectionError(msg) => {
+                  error!("Failed to set window layout: Monitor detection error: {}", msg);
+                  std::process::exit(1);
+             }
+             other_error => {
+                  error!("Failed to set window layout: An unexpected error occurred: {}", other_error);
+                  std::process::exit(1);
+             }
+         }
     }
-    info!("Window layout set.");
+    info!("Window layout set successfully.");
 
 
     // Initialize the input multiplexer to route inputs from individual devices
     // to their assigned game instances.
-    let mut input_mux = InputMux::new();
+    let mut input_mux = InputMux::new(); // Assuming InputMux::new() is fallible or returns a Result
     info!("Initializing input multiplexer.");
+
+    // Enumerate connected input devices
+    info!("Enumerating physical input devices.");
     if let Err(e) = input_mux.enumerate_devices() {
-        error!("Failed to enumerate input devices: {}", e);
-        // This is likely a fatal error as input cannot be routed without devices.
+        match e {
+            InputMuxError::IoError(io_e) => {
+                 if io_e.kind() == io::ErrorKind::PermissionDenied {
+                     error!("Permission denied when enumerating input devices. Run with sufficient privileges (e.g., add user to 'input' group or use sudo): {}", io_e);
+                 } else {
+                      error!("I/O error enumerating input devices: {}", io_e);
+                 }
+            }
+            other_error => {
+                error!("Failed to enumerate input devices: {}", other_error);
+            }
+        }
+        // Cannot proceed without input devices. This is likely fatal.
         std::process::exit(1);
     }
-    info!("Input devices enumerated.");
+    let available_devices = input_mux.get_available_devices();
+    info!("Input devices enumerated. Found {} usable devices.", available_devices.len());
+    debug!("Available devices: {:?}", available_devices);
 
-    // Map input devices to instances. The logic for mapping based on
-    // the input_devices argument needs to be implemented in InputMux.
-    if input_devices.is_empty() {
-         warn!("No input devices specified. Input multiplexing may not work as intended.");
-         // Depending on requirements, you might exit or proceed without input routing.
+    // Create virtual input devices for each game instance
+    info!("Creating virtual input devices for {} instances.", instances_usize);
+    if let Err(e) = input_mux.create_virtual_devices(instances_usize) {
+        match e {
+            InputMuxError::UinputError(uinput_e) => {
+                 // Uinput creation often requires write permissions on /dev/uinput
+                 if let Some(io_e) = uinput_e.source().and_then(|s| s.downcast_ref::<io::Error>()) {
+                     if io_e.kind() == io::ErrorKind::PermissionDenied {
+                         error!("Permission denied when creating virtual input devices. Run with sufficient privileges (e.g., add user to 'uinput' group or use sudo): {}", uinput_e);
+                     } else {
+                         error!("Uinput error creating virtual devices: {}", uinput_e);
+                     }
+                 } else {
+                     error!("Failed to create virtual input devices: {}", uinput_e);
+                 }
+            }
+            other_error => {
+                error!("Failed to create virtual input devices: {}", other_error);
+            }
+        }
+         // Cannot proceed without virtual devices for routing. This is fatal.
+        std::process::exit(1);
+    }
+     info!("Virtual input devices created.");
+
+
+    // Map input devices to instances based on command-line arguments
+    if input_devices_arg.is_empty() {
+         warn!("No input devices specified via command line ('-d' argument). Input multiplexing may not work as intended.");
+         // Decide how to handle this: map defaults, show a GUI for mapping, or exit.
+         // For now, we'll continue but input won't be routed unless default mapping exists in InputMux.
     } else {
-         info!("Mapping input devices to instances.");
-         // Assuming the order of input_devices corresponds to the order of launched instances
-         if input_devices.len() != instances {
-              warn!("Number of specified input devices ({}) does not match the number of instances ({}). Input mapping might be incorrect.", input_devices.len(), instances);
-              // Decide how to handle this mismatch - potentially map the first N devices to the first N instances.
+         info!("Mapping specified input devices to instances.");
+
+         if input_devices_arg.len() > instances_usize {
+              warn!("More input devices specified ({}) than launched instances ({}). Extra devices will not be mapped.", input_devices_arg.len(), instances_usize);
          }
 
-         for (i, device_name) in input_devices.iter().enumerate() {
-              // The InputMux::map_device_to_instance function needs to be implemented
-              // to find the actual input device by name or identifier and associate it
-              // with the i-th game instance (based on the order they were launched or a config).
-              // This example assumes a simple mapping by index.
-               input_mux.map_device_to_instance(device_name, i); // Assuming mapping by index i
-               info!("Mapped input device '{}' to instance index {}", device_name, i);
+         // The order of devices in input_devices_arg corresponds to the instance index (0-based)
+         for (instance_index, device_name_arg) in input_devices_arg.iter().enumerate() {
+              if instance_index >= instances_usize {
+                  info!("Skipping mapping for device '{}' as instance index {} is out of bounds.", device_name_arg, instance_index);
+                  break; // Stop if we run out of instances to map to
+              }
+
+              // Find the DeviceIdentifier for the device name provided in arguments
+              let device_identifier_option = available_devices.iter()
+                   .find(|id| id.name == *device_name_arg)
+                   .cloned(); // Clone the identifier to pass to map_device_to_instance_by_identifier
+
+              match device_identifier_option {
+                   Some(identifier) => {
+                        // Map the found physical device identifier to the current instance index
+                        if let Err(e) = input_mux.map_device_to_instance_by_identifier(identifier, instance_index) {
+                             error!("Failed to map device '{}' to instance {}: {}", device_name_arg, instance_index, e);
+                             // Decide if a mapping failure is fatal. Logging and continuing might be acceptable
+                             // if other devices are successfully mapped.
+                        } else {
+                             info!("Successfully mapped device '{}' to instance {}.", device_name_arg, instance_index);
+                        }
+                   }
+                   None => {
+                        warn!("Specified input device '{}' not found among available devices. Cannot map to instance {}. Available devices: {:?}", device_name_arg, instance_index, available_devices);
+                        // Continue to the next specified device argument
+                   }
+              }
          }
     }
 
-    // Capture input events. This is likely a blocking operation that
-    // keeps the application running and handling input.
-    info!("Starting input event capture.");
-    // The capture_events function should ideally handle errors internally
-    // or run in a separate thread if the main thread needs to do other things.
+
+    // Capture input events. This will spawn threads and keep the application running.
+    // This function should ideally return join handles for the spawned threads
+    // or signal readiness for the main thread to wait.
+    info!("Starting input event capture and routing.");
     if let Err(e) = input_mux.capture_events() {
-         error!("Error during input event capture: {}", e);
-         // This is likely a fatal error for a split-screen application.
+         error!("Error during input event capture setup: {}", e);
+         // If capture setup fails, input won't work. Likely fatal.
          std::process::exit(1);
     }
+    info!("Input event capture started. Background threads are running.");
 
 
     // If necessary, detect and launch Windows games via Proton
-    // This block is currently launching ALL instances with Proton if the flag is present.
-    // This logic might need refinement depending on how Proton integration works.
+    // This block's placement and logic need careful consideration.
     // If launch_game is meant to wrap the original executable launch with Proton,
     // this should likely happen earlier, perhaps within or called by instance_manager.
     if use_proton {
-        // This loop is likely redundant if launch_multiple_game_instances already
-        // handles launching via Proton when the flag is set.
-        // If launch_game is a separate step, the logic needs to be clear
-        // about which instance it's applying to.
          info!("Proton flag is set. Executing Proton launch logic.");
-         // The current loop structure would try to launch the *same* game_executable
-         // with Proton for *each* already launched instance, which is probably not intended.
-         // The Proton integration should likely happen once per instance,
-         // potentially modifying how the command is built in instance_manager
-         // or managing the Proton environment before spawning the game.
+         // The current loop structure below would try to launch the *same* game_executable
+         // with Proton for *each* already launched instance (represented by its Child process handle),
+         // which is probably not the intended behavior.
+         // The Proton integration should likely manage how the game is launched *per instance*.
+         // This might involve setting up environment variables and calling Proton before the
+         // actual game executable is spawned in instance_manager.
         /*
-        for instance in game_instances { // This loop is likely incorrect here
-            launch_game(&game_executable_path).unwrap_or_else(|e| {
-                eprintln!("Failed to launch game with Proton: {}", e);
-                std::process::exit(1);
-            });
+        // This loop is likely incorrect in its current location and logic
+        for instance in game_instances {
+            // Assuming launch_game takes the path to the Windows executable
+            // and handles the Proton environment setup.
+            // This needs to be integrated with the per-instance logic.
+            match launch_game(&game_executable_path) {
+                Ok(_) => info!("Attempted to launch game with Proton."),
+                Err(e) => error!("Failed to launch game with Proton: {}", e),
+                 // Decide if a Proton launch failure for one instance is fatal for all.
+                 // For now, we log and continue the loop (if the loop was correct).
+                 // std::process::exit(1); // Exiting here would stop the whole application on first Proton launch failure
+            }
         }
         */
-        // TODO: Re-evaluate Proton integration logic and where it fits in the workflow.
-         warn!("Proton integration block is currently a placeholder and might not be correctly implemented in this location.");
+         warn!("Proton integration block in main.rs is currently a placeholder and its logic needs to be correctly implemented and placed within the application flow (likely related to instance launching).");
     }
 
-    // Note: The main function currently exits after capture_events if it's blocking.
-    // If capture_events runs in a separate thread, the main thread might need to
-    // do other things or simply wait for a signal to exit.
+
+    // The main thread needs to stay alive to keep the background threads
+    // (input capture, potentially network emulator) running.
+    // If you had a GUI, its event loop would go here.
+    // For a console application, you can wait on the spawned threads
+    // or simply enter a blocking state.
+
+    // To wait for the input capture threads to finish (e.g., on graceful shutdown):
+    // You would need capture_events to return Vec<thread::JoinHandle<Result<(), InputMuxError>>>.
+    // Then, iterate through the handles and call .join().
+
+    info!("Hydra Co-op is running. Background services started.");
+    info!("Press Ctrl+C to initiate shutdown.");
+
+    // A simple way to keep the main thread alive in a console app is to wait
+    // on a signal (like Ctrl+C) or enter a long-running operation.
+    // For graceful shutdown, you would need signal handling (e.g., using the `ctrlc` crate).
+
+    // Example using the 'ctrlc' crate (add `ctrlc = "3.2"` to Cargo.toml):
+    /*
+    let running = Arc::new(atomic::AtomicBool::new(true));
+    let r = running.clone();
+    ctrlc::set_handler(move || {
+        info!("Ctrl+C received. Initiating graceful shutdown.");
+        r.store(false, atomic::Ordering::SeqCst);
+    }).expect("Error setting Ctrl-C handler");
+
+    // Wait until Ctrl+C is pressed
+    while running.load(atomic::Ordering::SeqCst) {
+        thread::sleep(Duration::from_millis(100));
+    }
+
+    info!("Shutdown sequence started. Waiting for background tasks...");
+    // Here, you would signal your background threads to stop and then wait for them to join.
+    // (Requires modification to capture_events and potentially net_emulator).
+
+    info!("Background tasks finished. Exiting.");
+    */
+
+    // Without explicit signal handling and graceful shutdown for threads,
+    // the simplest approach is a long-running loop or relying on the OS
+    // to clean up resources on process exit.
+
+    // Simple blocking loop if no graceful shutdown is implemented yet:
+     loop {
+         // This loop keeps the main thread alive.
+         // In a real application, this would be a GUI event loop
+         // or a more sophisticated waiting/shutdown mechanism.
+         thread::sleep(Duration::from_secs(60)); // Sleep for a minute to reduce CPU usage
+     }
+
+    // Code after the loop will only be reached if the loop breaks (e.g., via graceful shutdown)
+    // info!("Application finished."); // This line might not be reached in a simple blocking loop
+
 }
+
+// Note: Ensure all modules used here (cli, config, instance_manager, logging,
+// net_emulator, proton_integration, window_manager, input_mux) exist and
+// have the expected public functions and types as called in main.rs.
