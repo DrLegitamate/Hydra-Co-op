@@ -1,7 +1,7 @@
 // Top-level flowchart (as commented ASCII art) that outlines the overall bootstrapping process
 
 // +-----------------------------+
-// | Initialize Logging System    |
+// | Initialize Logging System   |
 // +-----------------------------+
 //               |
 //               v
