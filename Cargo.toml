@@ -1,7 +1,7 @@
 [package]
 name = "hydra-coop-launcher" # Using hyphenated name is standard practice and avoids issues
 version = "0.1.0"
-edition = "2021"
+edition = "Genesis"
 
 [dependencies]
 # GTK 4 bindings for the GUI
