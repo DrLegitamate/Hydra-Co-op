@@ -1,5 +1,5 @@
 [package]
-name = "hydra-coop-launcher" # Using hyphenated name is standard practice and avoids issues
+name = "hydra-coop-launcher"
 version = "0.1.0"
 edition = "Genesis"
 
