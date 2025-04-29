@@ -1,5 +1,5 @@
 use gtk::prelude::*;
-use gtk::{Application, ApplicationWindow, Grid, ComboBoxText, Entry, Button, Label, RadioButton, FileChooserDialog, Align, Orientation, MessageDialog, DialogFlags, MessageType, ButtonsType}; // Import dialog types
+use gtk::{Application, ApplicationWindow, Grid, ComboBoxText, Entry, Button, Label, RadioButton, FileChooserDialog, Align, Orientation, MessageDialog, DialogFlags, MessageType, ButtonsType, CheckButton}; // Import CheckButton
 use crate::input_mux::{InputMux, DeviceIdentifier, InputAssignment}; // Import InputAssignment
 use log::{info, error, warn, debug};
 use std::rc::Rc;
@@ -12,13 +12,13 @@ use crate::run_core_logic;
 use std::thread::{self, JoinHandle}; // Import JoinHandle
 use std::error::Error; // Import Error trait for boxed errors
 use std::sync::{Arc, Mutex}; // Import Arc and Mutex for shared mutable state across threads
+use serde_json; // Import serde_json for serializing/deserializing DeviceIdentifier
 
 
 // Define a struct to hold GUI state and data accessible by signal handlers
 #[derive(Default)]
 struct GuiState {
     available_input_devices: Vec<DeviceIdentifier>,
-    // Add other fields to store widget references or collected data temporarily
     file_path_label: Option<Label>,
     num_players_combo: Option<ComboBoxText>,
     input_combos: Vec<ComboBoxText>, // Store references to dynamically created input combo boxes
@@ -27,6 +27,9 @@ struct GuiState {
     input_fields_container: Option<Grid>, // Store reference to the container Grid
     main_window: Option<ApplicationWindow>, // Store reference to the main window
     initial_config: Config, // Store initial config for persistence and defaults
+
+    // Add reference to the Proton checkbox
+    use_proton_checkbox: Option<CheckButton>,
 
     // Store instances of background services spawned by the core logic thread
     // Use Arc<Mutex<>> to allow safe shared access across threads (GUI thread and shutdown handler)
@@ -51,7 +54,7 @@ struct GuiState {
 pub fn run_gui(available_devices: Vec<DeviceIdentifier>, initial_config: Config) -> Result<(), Box<dyn std::error::Error>> {
 
     let application = Application::new(
-        Some("com.example.split_screen_launcher.gui"),
+        Some("com.example.split-screen-launcher.gui"), // Updated application ID
         Default::default(),
     );
 
@@ -70,7 +73,7 @@ pub fn run_gui(available_devices: Vec<DeviceIdentifier>, initial_config: Config)
         let window = ApplicationWindow::new(app);
         window.set_title("Hydra Co-op Launcher");
         window.set_default_size(800, 600);
-         gui_state.borrow_mut().main_window = Some(window.clone()); // Store window reference
+         gui_state.borrow_mut().main_window = Some(window.clone());
 
 
         let grid_container = Grid::new();
@@ -88,11 +91,11 @@ pub fn run_gui(available_devices: Vec<DeviceIdentifier>, initial_config: Config)
         grid_container.attach(&num_players_label, 0, 0, 1, 1);
 
         let num_players_combo = gtk::ComboBoxText::new();
-        for i in 2..=4 {
-            num_players_combo.append_text(&i.to_string());
+        for i in 1..=4 { // Allowing 1 player for testing/single player scenarios
+             num_players_combo.append_text(&i.to_string());
         }
         grid_container.attach(&num_players_combo, 1, 0, 1, 1);
-         gui_state.borrow_mut().num_players_combo = Some(num_players_combo.clone()); // Store reference
+         gui_state.borrow_mut().num_players_combo = Some(num_players_combo.clone());
 
 
         // --- Profile Name ---
@@ -102,7 +105,7 @@ pub fn run_gui(available_devices: Vec<DeviceIdentifier>, initial_config: Config)
         let profile_name_entry = gtk::Entry::new();
         profile_name_entry.set_placeholder_text(Some("Enter profile name"));
         grid_container.attach(&profile_name_entry, 1, 1, 1, 1);
-         gui_state.borrow_mut().profile_name_entry = Some(profile_name_entry.clone()); // Store reference
+         gui_state.borrow_mut().profile_name_entry = Some(profile_name_entry.clone());
 
 
         // --- Game Executable ---
@@ -112,7 +115,7 @@ pub fn run_gui(available_devices: Vec<DeviceIdentifier>, initial_config: Config)
         let file_path_label = gtk::Label::new(None);
         file_path_label.set_ellipsize(pango::EllipsizeMode::Start);
         grid_container.attach(&file_path_label, 1, 2, 1, 1);
-         gui_state.borrow_mut().file_path_label = Some(file_path_label.clone()); // Store reference
+         gui_state.borrow_mut().file_path_label = Some(file_path_label.clone());
 
 
         // --- Layout Selection ---
@@ -130,19 +133,25 @@ pub fn run_gui(available_devices: Vec<DeviceIdentifier>, initial_config: Config)
         layout_box.append(&vertical_radio);
         layout_box.append(&custom_radio);
 
-         // Store references to layout radios
          gui_state.borrow_mut().layout_radios = vec![horizontal_radio.clone(), vertical_radio.clone(), custom_radio.clone()];
-         horizontal_radio.set_active(true); // Default layout
 
 
-        // --- Input Device Assignment (Dynamic Placeholder) ---
+        // --- Proton Option ---
+        let use_proton_checkbox = CheckButton::with_label("Use Proton");
+        grid_container.attach(&use_proton_checkbox, 0, 4, 1, 1); // Position below layout label
+         gui_state.borrow_mut().use_proton_checkbox = Some(use_proton_checkbox.clone()); // Store reference
+
+
+        // --- Input Device Assignment (Dynamic) ---
         let input_assignment_label = gtk::Label::new(Some("Input Assignments:"));
-        grid_container.attach(&input_assignment_label, 0, 4, 1, 1);
+        grid_container.attach(&input_assignment_label, 0, 5, 1, 1); // Position below Proton checkbox
+
 
         let input_fields_container = Grid::new();
         input_fields_container.set_row_spacing(5);
         input_fields_container.set_column_spacing(5);
-        grid_container.attach(&input_fields_container, 1, 4, 1, 4);
+        grid_container.attach(&input_fields_container, 1, 5, 1, 4); // Adjust row to 5
+
 
         gui_state.borrow_mut().input_fields_container = Some(input_fields_container.clone());
 
@@ -151,9 +160,12 @@ pub fn run_gui(available_devices: Vec<DeviceIdentifier>, initial_config: Config)
         let populate_input_combo = |combo: &gtk::ComboBoxText, available_devices: &[DeviceIdentifier]| {
              combo.remove_all();
              combo.append_text("Auto-detect");
-             // Append device names to the combo box, storing the DeviceIdentifier string representation as the ID
              for device_id in available_devices {
-                 combo.append(&serde_json::to_string(device_id).expect("Failed to serialize device ID").as_str(), &device_id.name);
+                 // Store the serialized DeviceIdentifier as the ID, display the device name
+                 match serde_json::to_string(device_id) {
+                     Ok(id_string) => combo.append(&id_string, &device_id.name),
+                     Err(e) => error!("Failed to serialize device ID {:?}: {}", device_id, e),
+                 }
              }
              combo.set_active_id(Some("Auto-detect")); // Default to "Auto-detect"
         };
@@ -184,6 +196,26 @@ pub fn run_gui(available_devices: Vec<DeviceIdentifier>, initial_config: Config)
             }
             container.show_all();
             info!("Input fields updated.");
+
+             // After updating fields, attempt to load previous selections from initial config
+             // This needs to happen here because combo boxes are recreated.
+             let initial_config = &state.initial_config;
+             let input_combos_clone = state.input_combos.clone(); // Clone combo refs
+
+              // Use glib::MainContext::default().spawn_local to safely populate combo selections
+              // after the widgets are fully realized.
+              glib::MainContext::default().spawn_local(async move {
+                  // This runs on the main thread after the GUI is likely ready.
+                  for (i, mapping_str) in initial_config.input_mappings.iter().enumerate() {
+                      // Find the combo box for this instance index
+                      if let Some(combo) = input_combos_clone.get(i) {
+                          combo.set_active_id(Some(mapping_str));
+                           debug!("Set combo box {} active ID from config to {}", i, mapping_str);
+                      } else {
+                           warn!("No input combo box found for instance index {} to load config mapping.", i);
+                      }
+                  }
+              });
         };
 
         // Connect signal to "Number of Players" combo box
@@ -204,16 +236,17 @@ pub fn run_gui(available_devices: Vec<DeviceIdentifier>, initial_config: Config)
              }
         });
 
+
         // --- Control Buttons ---
         let buttons_box = gtk::Box::new(Orientation::Horizontal, 10);
-        grid_container.attach(&buttons_box, 0, 9, 2, 1);
+        grid_container.attach(&buttons_box, 0, 10, 2, 1); // Adjust row to 10
         buttons_box.set_halign(Align::End);
 
-        let save_button = gtk::Button::with_label("Save Settings"); // Added Save button back
+        let save_button = gtk::Button::with_label("Save Settings");
         let launch_button = gtk::Button::with_label("Launch Game");
         let cancel_button = gtk::Button::with_label("Cancel");
 
-        buttons_box.append(&save_button); // Add Save button to box
+        buttons_box.append(&save_button);
         buttons_box.append(&cancel_button);
         buttons_box.append(&launch_button);
 
@@ -255,7 +288,7 @@ pub fn run_gui(available_devices: Vec<DeviceIdentifier>, initial_config: Config)
             let state = gui_state_clone_save.borrow();
             let main_window = state.main_window.as_ref().expect("Main window not set for saving");
 
-            // Collect data to save
+            // --- Collect Data to Save ---
             let file_path_str = state.file_path_label.as_ref().unwrap().get_text().to_string();
              let game_paths = if file_path_str.is_empty() {
                  vec![]
@@ -263,7 +296,7 @@ pub fn run_gui(available_devices: Vec<DeviceIdentifier>, initial_config: Config)
                  vec![PathBuf::from(file_path_str)] // Store as Vec<PathBuf>
              };
 
-             // Collect input assignments (names/auto)
+             // Collect input assignments (serialized IDs or "Auto-detect")
              let mut input_mappings: Vec<String> = Vec::new();
              for combo in &state.input_combos {
                  // Save the active ID (which is "Auto-detect" or the serialized DeviceIdentifier string)
@@ -285,7 +318,13 @@ pub fn run_gui(available_devices: Vec<DeviceIdentifier>, initial_config: Config)
             let window_layout = layout_option.to_string(); // Store as String
 
 
+             // Get the state of the Proton checkbox
+            let use_proton = state.use_proton_checkbox.as_ref().expect("Use Proton checkbox not set").get_active();
+
+
              // TODO: Collect network_ports and other future config options from GUI controls
+             // For now, keep the network_ports from the initial loaded config
+            let network_ports = state.initial_config.network_ports.clone();
 
 
              // Create a new Config struct
@@ -293,18 +332,20 @@ pub fn run_gui(available_devices: Vec<DeviceIdentifier>, initial_config: Config)
                 game_paths,
                 input_mappings, // Save the collected mappings (names/serialized IDs)
                 window_layout,
-                network_ports: state.initial_config.network_ports.clone(), // Placeholder: use initial config ports
-                // TODO: Collect network_ports from GUI if added
+                network_ports,
+                use_proton, // Save the state of the Proton checkbox
             };
 
             // Save the config to the file
-            let config_path_str = env::var("CONFIG_PATH").unwrap_or_else(|_| "config.toml".to_string());
+            let config_path_str = env::var("CONFIG_PATH").unwrap_or_else(|| "config.toml".to_string());
             let config_path = PathBuf::from(config_path_str);
 
             match new_config.save(&config_path) {
                 Ok(_) => {
                     info!("Configuration saved successfully to {}", config_path.display());
                     show_info_dialog(main_window, "Settings Saved", &format!("Configuration saved successfully to {}", config_path.display()));
+                     // Update the initial_config in GuiState after saving
+                     gui_state_clone_save.borrow_mut().initial_config = new_config;
                 }
                 Err(e) => {
                     error!("Failed to save configuration to {}: {}", config_path.display(), e);
@@ -320,6 +361,15 @@ pub fn run_gui(available_devices: Vec<DeviceIdentifier>, initial_config: Config)
         launch_button.connect_clicked(move |_| {
             let state = gui_state_clone_launch.borrow();
             let main_window = state.main_window.as_ref().expect("Main window not set for launch");
+
+            // Check if core logic thread is already running
+            let mut thread_handle_lock = state.core_logic_thread.lock().expect("Failed to lock core_logic_thread handle for launch");
+            if thread_handle_lock.is_some() {
+                warn!("Core logic thread is already running. Cannot launch again.");
+                 show_warning_dialog(main_window, "Launch In Progress", "Core launch logic is already running. Please wait for it to finish or cancel.");
+                 return;
+            }
+
 
             // --- Collect Data from Widgets ---
             let file_path_str = state.file_path_label.as_ref().unwrap().get_text().to_string();
@@ -341,8 +391,13 @@ pub fn run_gui(available_devices: Vec<DeviceIdentifier>, initial_config: Config)
             }
 
 
-            let player_count_str = state.num_players_combo.as_ref().unwrap().get_active_text().unwrap_or_else(|| "2".to_string());
-            let player_count = player_count_str.parse::<usize>().unwrap_or(2);
+            let player_count_str = state.num_players_combo.as_ref().unwrap().get_active_text().unwrap_or_else(|| "1".to_string()); // Default to 1 player if combo is empty
+            let player_count = player_count_str.parse::<usize>().unwrap_or(1);
+             if player_count == 0 {
+                  warn!("Number of players is zero. Cannot launch.");
+                  show_warning_dialog(main_window, "Launch Error", "Number of players must be at least 1.");
+                  return;
+             }
 
 
             let mut input_assignments_for_core: Vec<(usize, InputAssignment)> = Vec::new();
@@ -350,7 +405,7 @@ pub fn run_gui(available_devices: Vec<DeviceIdentifier>, initial_config: Config)
              for (i, combo) in state.input_combos.iter().enumerate() {
                  if i >= player_count { break; } // Only process up to the selected player count
 
-                 let active_id = combo.get_active_id().unwrap_or_else(|| "Auto-detect".to_string()); // Get the stored ID
+                 let active_id = combo.get_active_id().unwrap_or_else(|| "Auto-detect".to_string());
 
                  let assignment = if active_id == "Auto-detect" {
                      info!("Player {}: Input assigned to Auto-detect.", i + 1);
@@ -359,19 +414,19 @@ pub fn run_gui(available_devices: Vec<DeviceIdentifier>, initial_config: Config)
                      // Attempt to deserialize the stored DeviceIdentifier string
                      match serde_json::from_str::<DeviceIdentifier>(&active_id) {
                          Ok(device_id) => {
-                              // Check if the device exists among available devices (optional but good practice)
+                              // Check if the device exists among available devices
                               if state.available_input_devices.contains(&device_id) {
                                   info!("Player {}: Input assigned to device '{:?}'.", i + 1, device_id);
                                    InputAssignment::Device(device_id)
                               } else {
                                   warn!("Player {}: Assigned device '{:?}' not found among available devices. Assigning None.", i + 1, device_id);
-                                   // TODO: Show a warning dialog
+                                   show_warning_dialog(main_window, "Input Device Warning", &format!("Input device '{}' for Player {} not found. Assigning no device.", device_id.name, i + 1));
                                    InputAssignment::None
                               }
                          }
                          Err(e) => {
                              error!("Player {}: Failed to deserialize DeviceIdentifier from active ID '{}': {}", i + 1, active_id, e);
-                              // TODO: Show a warning/error dialog
+                              show_error_dialog(main_window, "Input Error", &format!("Failed to process input device for Player {}: {}", i + 1, e));
                              InputAssignment::None // Assign None on deserialization error
                          }
                      }
@@ -398,20 +453,24 @@ pub fn run_gui(available_devices: Vec<DeviceIdentifier>, initial_config: Config)
 
 
             let profile_name = state.profile_name_entry.as_ref().unwrap().get_text().to_string();
-             // TODO: Use profile_name for saving/loading config profiles
 
 
-            // TODO: Implement logic to get the use_proton flag from the GUI (e.g., a checkbox)
-            let use_proton = false; // Placeholder - needs a GUI control
+             // Get the state of the Proton checkbox
+            let use_proton = state.use_proton_checkbox.as_ref().expect("Use Proton checkbox not set").get_active();
 
 
             info!("--- Triggering Core Logic from GUI ---");
-            // ... Log collected settings ...
+            info!("File Path: {}", file_path.display());
+            info!("Player Count: {}", player_count);
+            info!("Input Assignments (Converted): {:?}", input_assignments_for_core); // Log the converted assignments
+            info!("Layout Option: {:?}", layout);
+            info!("Profile Name: {}", profile_name);
+            info!("Use Proton: {}", use_proton);
             info!("-----------------------------------------");
 
 
             // Trigger the core application launch logic in a separate thread
-            // Disable launch button and show loading indicator while launching
+             // Disable launch button and show loading indicator while launching
              let launch_button_clone = launch_button.clone();
              launch_button_clone.set_sensitive(false);
              // TODO: Add a loading indicator (e.g., a Spinner or progress bar)
@@ -421,20 +480,6 @@ pub fn run_gui(available_devices: Vec<DeviceIdentifier>, initial_config: Config)
              // Clone input_assignments_for_core for the thread
              let input_assignments_clone_for_thread = input_assignments_for_core.clone();
 
-            // Acquire mutex lock on the thread handle BEFORE spawning
-            let core_logic_thread_handle_clone = Arc::clone(&state.core_logic_thread);
-             let mut thread_handle_lock = core_logic_thread_handle_clone.lock().expect("Failed to lock core_logic_thread handle");
-             // Ensure no thread is already running
-             if thread_handle_lock.is_some() {
-                 warn!("Core logic thread is already running. Cannot launch again.");
-                  show_warning_dialog(main_window, "Launch In Progress", "Core launch logic is already running.");
-                 launch_button_clone.set_sensitive(true); // Re-enable if we didn't launch
-                  return;
-             }
-
-
-             let background_services_state_clone = Arc::clone(&state.background_services); // Clone for the thread
-
 
              let join_handle = thread::spawn(move || {
                  info!("Launching core logic from GUI thread.");
@@ -442,18 +487,29 @@ pub fn run_gui(available_devices: Vec<DeviceIdentifier>, initial_config: Config)
                  let core_result = run_core_logic(
                     &file_path_clone,
                     player_count,
-                    &input_assignments_clone_for_thread, // Pass the Assignment vector
+                    &input_assignments_clone_for_thread,
                     layout,
                     use_proton,
                     &initial_config_clone_for_thread,
                  );
 
                  // Store the returned background services instances if successful
-                 if let Ok((net_emu, input_mux)) = core_result {
+                 if let Ok((net_emu, input_mux)) = &core_result { // Borrow the result to access instances
                       info!("Core logic returned background service instances.");
-                      let mut services_lock = background_services_state_clone.lock().expect("Failed to lock background_services state");
-                      *services_lock = Some((net_emu, input_mux)); // Store the instances
-                      info!("Background service instances stored.");
+                      let mut services_lock = background_services_state.lock().expect("Failed to lock background_services state");
+                      *services_lock = Some((net_emu.clone(), input_mux.clone())); // Clone and store the instances (requires Clone on services)
+                       // Note: Clone on NetEmulator and InputMux might not be trivial if they hold non-Cloneable resources (like file handles).
+                       // A better approach is to store Arc<Mutex<>> of the service *internals* or pass stop senders.
+                       // For simplicity now, assuming Clone works or needs to be implemented.
+                       // CORRECTED: Services instances should be moved, not cloned, and stored in the Option.
+                      if let Ok((net_emu_moved, input_mux_moved)) = core_result { // Re-match to move
+                         let mut services_lock = background_services_state.lock().expect("Failed to lock background_services state for moving");
+                         *services_lock = Some((net_emu_moved, input_mux_moved)); // Store the moved instances
+                          info!("Background service instances moved and stored.");
+                      } else {
+                           error!("Core logic returned an error, cannot move and store background service instances.");
+                      }
+
                  } else {
                       error!("Core logic returned an error, no background service instances to store.");
                  }
@@ -461,17 +517,18 @@ pub fn run_gui(available_devices: Vec<DeviceIdentifier>, initial_config: Config)
 
                  // Use glib::idle_add_local or glib::MainContext::default().spawn_local
                  // to update the GUI from the background thread.
+                 let gui_state_clone_for_gui_update = Rc::clone(&gui_state_clone_launch); // Clone for GUI update closure
                  glib::MainContext::default().spawn_local(async move {
                       // Re-enable the launch button and hide loading indicator
                       launch_button_clone.set_sensitive(true);
                        // TODO: Hide loading indicator
 
                      // Check the result of the core logic
-                     match core_result {
+                     match core_result { // Check the *original* core_result here
                          Ok(_) => info!("Core application logic completed successfully in thread."),
                          Err(e) => {
                             error!("Core application logic failed in thread: {}", e);
-                            show_error_dialog(&state.main_window.as_ref().expect("Main window not set"), "Launch Failed", &format!("Failed to launch game: {}", e));
+                            show_error_dialog(&gui_state_clone_for_gui_update.borrow().main_window.as_ref().expect("Main window not set"), "Launch Failed", &format!("Failed to launch game: {}", e));
                          }
                      }
                      // Clear the thread handle after it finishes
@@ -481,12 +538,12 @@ pub fn run_gui(available_devices: Vec<DeviceIdentifier>, initial_config: Config)
 
                  });
 
-                 // The thread returns the result of run_core_logic
-                 core_result
+                 // The thread returns the result of run_core_logic (the moved services)
+                 core_result // Return the result containing the moved services
              });
 
-            // Store the join handle
-             *thread_handle_lock = Some(join_handle); // Store the join handle in the shared state
+            // Store the join handle in the shared state
+             *thread_handle_lock = Some(join_handle);
 
 
         });
@@ -498,7 +555,6 @@ pub fn run_gui(available_devices: Vec<DeviceIdentifier>, initial_config: Config)
 
         cancel_button.connect_clicked(move |_| {
             info!("Cancel button clicked.");
-            // Trigger window close which will then trigger the close_request signal
             window_clone_for_cancel.close();
         });
 
@@ -514,7 +570,7 @@ pub fn run_gui(available_devices: Vec<DeviceIdentifier>, initial_config: Config)
 
                  // Signal background services to stop
                  let mut services_lock = state.background_services.lock().expect("Failed to lock background_services during shutdown");
-                 if let Some((net_emu, input_mux)) = services_lock.take() { // Take the services to stop them
+                 if let Some((mut net_emu, mut input_mux)) = services_lock.take() { // Take the services to stop them
                       info!("Stopping background NetEmulator and InputMux.");
                      // Spawn a new thread to stop services and join the core logic thread
                       // to avoid blocking the GTK main loop during shutdown.
@@ -525,9 +581,7 @@ pub fn run_gui(available_devices: Vec<DeviceIdentifier>, initial_config: Config)
                          } else {
                              info!("Network relay stopped in shutdown thread.");
                          }
-                          // Note: InputMux stop_capture should also be called here
-                          // but needs to be implemented. Assume it exists for now.
-                         if let Err(e) = input_mux.stop_capture() { // Assuming stop_capture exists
+                          if let Err(e) = input_mux.stop_capture() {
                              error!("Error stopping input capture during shutdown thread: {}", e);
                          } else {
                              info!("Input capture stopped in shutdown thread.");
@@ -545,19 +599,20 @@ pub fn run_gui(available_devices: Vec<DeviceIdentifier>, initial_config: Config)
                              }
                              Err(e) => error!("Core logic thread panicked during shutdown join: {:?}", e),
                          }
-                          info!("Shutdown thread finished.");
-                         // At this point, all background threads related to this launch should be stopped.
-                         // The main application can now safely exit.
+                          info!("Shutdown thread finished. Allowing application to exit.");
+                          // At this point, all background threads related to this launch should be stopped.
+                          // The application can now safely exit.
+                           // If the main GTK loop is still running, exiting here will terminate the process.
+
+                          // To allow the GTK window to close *after* this, you would typically
+                          // use glib::idle_add_local or a channel to signal back to the main thread
+                          // to allow the window close request (by returning Inhibit(false) from the handler).
+                          // For now, we rely on process exit cleaning up GTK resources.
+
                      });
 
                       // Inhibit the window close until the shutdown thread finishes
-                      // This is complex to manage correctly. A simpler approach might be
-                      // to just let the main thread exit and rely on Drop implementations
-                      // or signal handling in main.rs.
-
-                     // For now, inhibit the close request and rely on the shutdown thread
-                     // to eventually allow the application to exit.
-                     // Returning Inhibit(true) tells GTK to not close the window yet.
+                      // This is complex to manage correctly. For now, inhibit and rely on process exit.
                      return Inhibit(true); // Inhibit closing while shutting down threads
                  } else {
                       info!("No background services to stop.");
@@ -572,48 +627,38 @@ pub fn run_gui(available_devices: Vec<DeviceIdentifier>, initial_config: Config)
 
 
         // Initial update of input fields based on the default player count
-        let initial_player_count_str = num_players_combo.get_active_text().unwrap_or_else(|| "2".to_string());
-        let initial_player_count = initial_player_count_str.parse::<usize>().unwrap_or(2);
-         update_input_fields(initial_player_count);
+        let initial_player_count_str = initial_config.input_mappings.len().to_string(); // Get initial player count from config input mappings
+         // Ensure this count is at least 1 if mappings are empty
+         let initial_player_count = initial_player_count_str.parse::<usize>().unwrap_or(initial_config.input_mappings.len());
+         let initial_player_count = if initial_player_count == 0 { 1 } else { initial_player_count };
 
-         // TODO: Populate other GUI widgets with values from initial_config
-         // Example: Set selected game executable path if present in config
+
+         // Set the number of players combo box to the initial player count
+         if let Some(combo) = state.num_players_combo.as_ref() {
+              combo.set_active_id(Some(&initial_player_count.to_string()));
+              // The connect_changed signal *should* trigger update_input_fields here
+              // If it doesn't (depending on GTK version/signal behavior), call update_input_fields explicitly:
+              // update_input_fields(initial_player_count);
+         } else {
+              // Fallback if combo not set in state yet (shouldn't happen with current structure)
+               update_input_fields(initial_player_count);
+         }
+
+
+         // Populate other GUI widgets with values from initial_config
          if let Some(game_path) = initial_config.game_paths.first() {
               state.file_path_label.as_ref().expect("File path label not set").set_text(&game_path.to_string_lossy());
          }
-         // Example: Set selected layout from config
+         // Set selected layout from config
           match initial_config.window_layout.as_str() {
                "horizontal" => state.layout_radios[0].set_active(true),
                "vertical" => state.layout_radios[1].set_active(true),
                "custom" => state.layout_radios[2].set_active(true),
                _ => warn!("Unknown layout in config: {}", initial_config.window_layout),
           }
-          // Example: Set number of players from config (if stored and valid)
-          // You would need to store player count in config.toml for this.
-          // For now, the combo box defaults to 2.
-
-
-         // TODO: Populate input device combo box selections from config.input_mappings
-         // This requires iterating through input_combos and initial_config.input_mappings,
-         // finding the corresponding combo box for each instance index, and setting
-         // its active ID based on the saved mapping string ("Auto-detect" or serialized DeviceIdentifier).
-         let initial_input_mappings = initial_config.input_mappings.clone(); // Clone for closure
-         let input_combos_clone_for_config = state.input_combos.clone(); // Clone combo refs
-
-         // Use glib::MainContext::default().spawn_local to safely populate combo selections
-         // after the widgets are fully realized.
-         glib::MainContext::default().spawn_local(async move {
-             // This runs on the main thread after the GUI is likely ready.
-             for (i, mapping_str) in initial_input_mappings.iter().enumerate() {
-                 // Find the combo box for this instance index
-                 if let Some(combo) = input_combos_clone_for_config.get(i) {
-                     combo.set_active_id(Some(mapping_str));
-                      debug!("Set combo box {} active ID to {}", i, mapping_str);
-                 } else {
-                      warn!("No input combo box found for instance index {} to load config.", i);
-                 }
-             }
-         });
+         // Set Proton checkbox state from config
+         state.use_proton_checkbox.as_ref().expect("Use Proton checkbox not set").set_active(initial_config.use_proton);
+         // Set Profile Name from config (if you add it to Config)
 
 
         window.present();
