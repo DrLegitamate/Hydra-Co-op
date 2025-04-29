@@ -11,12 +11,7 @@
 //               |
 //               v
 // +-----------------------------+
-// | Load User Configuration     |
-// +-----------------------------+
-//               |
-//               v
-// +-----------------------------+
-// | Decide CLI or GUI Mode      |
+// | Decide CLI or GUI Mode      | // Updated logic for defaulting
 // +-----------------------------+
 //              /   \
 //             v     v
@@ -55,7 +50,7 @@
 // +-----------------------------+
 
 
-use crate::cli::parse_args;
+use crate::cli::parse_args; // We won't directly use parse_args from cli anymore, but build_cli is used
 use crate::config::{Config, ConfigError}; // Import ConfigError
 use crate::instance_manager::{launch_multiple_game_instances, InstanceManagerError}; // Import InstanceManagerError
 use crate::logging::init as init_logging; // Alias to avoid name conflict if another 'init' exists
@@ -72,9 +67,6 @@ use std::process::Child; // Import Child if needed for instance management
 use std::fs; // Import fs for creating WINEPREFIX base directory
 use log::SetLoggerError; // Import SetLoggerError
 use std::error::Error; // Import Error trait for boxed errors in run_core_logic
-
-// Assuming your GUI code is in src/gui.rs and has a public run_gui function
-mod gui; // Declare the gui module
 
 
 /// Encapsulates the core application logic: launching instances, setting up
@@ -234,17 +226,23 @@ pub fn run_core_logic(
     let mut input_mux = InputMux::new(); // Assuming new() is fallible or returns a Result in the future
     info!("Initializing input multiplexer.");
 
-    info!("Enumerating physical input devices.");
-    input_mux.enumerate_devices().map_err(|e| Box::new(e) as Box<dyn Error>)?; // Map and return InputMuxError
-    let available_devices = input_mux.get_available_devices();
-    info!("Input devices enumerated. Found {} usable devices.", available_devices.len());
-    debug!("Available devices: {:?}", available_devices);
+    // Enumerate physical input devices. This happens in main.rs before calling run_core_logic
+    // if the GUI is used, and should ideally happen before this function is called.
+    // If called from CLI, we might need to re-enumerate here or pass the list.
+    // Let's assume the list of available devices is passed or accessible.
+    // For now, we'll re-enumerate here in run_core_logic for simplicity in CLI path.
+     info!("Enumerating physical input devices (in core logic).");
+     input_mux.enumerate_devices().map_err(|e| Box::new(e) as Box<dyn Error>)?; // Map and return InputMuxError
+     let available_devices = input_mux.get_available_devices();
+     info!("Input devices enumerated. Found {} usable devices.", available_devices.len());
+     debug!("Available devices: {:?}", available_devices);
+
 
     info!("Creating virtual input devices for {} instances.", instances_usize);
     input_mux.create_virtual_devices(instances_usize).map_err(|e| Box::new(e) as Box<dyn Error>)?; // Map and return InputMuxError
     info!("Virtual input devices created.");
 
-    // Map input devices to instances based on command-line arguments (or combined config/args)
+    // Map input devices to instances based on the provided device names
     if input_devices_names.is_empty() {
          warn!("No input devices specified. Input multiplexing may not work as intended.");
          // Decide how to handle this: map defaults, show a GUI for mapping, or exit.
@@ -332,13 +330,67 @@ fn main() {
     // Now parse the full command-line arguments, including the potential GUI flag
     let matches: ArgMatches = build_cli_with_gui_flag().get_matches();
 
-    let use_gui: bool = *matches.get_one("gui").unwrap_or(&false);
+    let use_gui_flag: bool = *matches.get_one("gui").unwrap_or(&false);
+
+    // Check if any of the required CLI arguments are provided.
+    // We can check for 'game_executable' as a representative required arg.
+    let cli_args_provided = matches.contains_id("game_executable");
 
 
-    if use_gui {
-        info!("Starting GUI mode.");
-        // The GUI will handle configuration and triggering the core logic.
-         if let Err(e) = gui::run_gui() { // Call the public function from gui.rs
+    if use_gui_flag || !cli_args_provided {
+        // If the --gui flag is present, OR if no required CLI args are provided,
+        // default to starting the GUI.
+        info!("Starting GUI mode (default or requested).");
+
+        // Enumerate input devices once before starting the GUI, as the GUI needs this list.
+        let mut input_mux_enumerator = InputMux::new();
+        let available_devices = match input_mux_enumerator.enumerate_devices() {
+            Ok(_) => {
+                 info!("Input devices enumerated for GUI.");
+                 input_mux_enumerator.get_available_devices()
+            }
+            Err(e) => {
+                 error!("Failed to enumerate input devices for GUI: {}", e);
+                 // Display an error to the user in the GUI might be better,
+                 // but returning an empty list allows the GUI to still start.
+                 Vec::new()
+            }
+        };
+         info!("Found {} usable input devices.", available_devices.len());
+
+
+        // Load configuration before starting the GUI to populate it with existing settings.
+        let config_path_str = env::var("CONFIG_PATH").unwrap_or_else(|_| "config.toml".to_string());
+        let config_path = Path::new(&config_path_str);
+        info!("Attempting to load configuration from {}", config_path.display());
+
+        let config = match Config::load(config_path) {
+            Ok(cfg) => {
+                info!("Configuration loaded successfully from {}", config_path.display());
+                cfg
+            }
+            Err(ConfigError::IoError(io_err)) => {
+                 if io_err.kind() == io::ErrorKind::NotFound {
+                      warn!("Configuration file not found at {}. Using default configuration.", config_path.display());
+                      Config::default_config()
+                 } else {
+                      error!("Failed to load configuration from {}: I/O Error: {}", config_path.display(), io_err);
+                      // Decide if failure to load config in GUI mode is fatal.
+                      // For now, log and proceed with defaults.
+                      Config::default_config() // Proceed with default even on other IO errors
+                 }
+            }
+            Err(e) => { // Catch other ConfigError variants
+                error!("Failed to load configuration from {}: {}", config_path.display(), e);
+                // Log and proceed with defaults on other config errors
+                Config::default_config()
+            }
+        };
+         info!("Configuration loaded or defaulted for GUI.");
+
+
+        // Pass the enumerated devices and loaded config to the GUI
+         if let Err(e) = gui::run_gui(available_devices, config) { // Pass data to run_gui
              error!("GUI application failed: {}", e);
              std::process::exit(1);
          }
@@ -346,23 +398,24 @@ fn main() {
          info!("GUI application finished.");
 
     } else {
+        // If --gui is NOT present AND required CLI args ARE provided, run in CLI mode.
         info!("Starting CLI mode.");
-        // In CLI mode, we proceed with parsing arguments and executing core logic directly.
 
         // Retrieve parsed command-line arguments using clap 4.0+ methods
-        let game_executable_str: &String = matches.get_one("game_executable").expect("game_executable argument missing in CLI mode");
+        // These are guaranteed to be present due to the check above.
+        let game_executable_str: &String = matches.get_one("game_executable").unwrap(); // Safe to unwrap
         let game_executable_path = Path::new(game_executable_str);
 
-        let instances: u32 = *matches.get_one("instances").expect("instances argument missing in CLI mode");
+        let instances: u32 = *matches.get_one("instances").unwrap(); // Safe to unwrap
         let instances_usize = instances as usize;
 
         // Collect input device names from CLI arguments as Vec<&str>
         let input_devices_names_arg: Vec<&str> = matches.get_many::<String>("input_devices")
-            .expect("input_devices argument missing in CLI mode")
+            .unwrap() // Safe to unwrap
             .map(|s| s.as_str())
             .collect();
 
-        let layout_str: &String = matches.get_one("layout").expect("layout argument missing in CLI mode");
+        let layout_str: &String = matches.get_one("layout").unwrap(); // Safe to unwrap
         let layout = Layout::from(layout_str.as_str());
 
         let use_proton: bool = *matches.get_one("proton").unwrap_or(&false); // Assuming 'proton' is a boolean flag
@@ -392,7 +445,7 @@ fn main() {
                       Config::default_config()
                  } else {
                       error!("Failed to load configuration from {}: I/O Error: {}", config_path.display(), io_err);
-                      std::process::exit(1);
+                      std::process::exit(1); // Fatal for other IO errors
                  }
             }
             Err(e) => { // Catch other ConfigError variants
@@ -436,6 +489,8 @@ fn main() {
 }
 
 // Helper function for early parsing of args (just for debug flag)
+// Note: This uses Command::new with a placeholder name, which is fine
+// for this limited early parsing purpose.
 fn parse_args_for_logging() -> ArgMatches {
     Command::new("Hydra Co-op")
         .arg(Arg::new("debug").long("debug").action(clap::ArgAction::SetTrue))
