@@ -40,17 +40,18 @@
 // +-----------------------------+
 
 use crate::cli::parse_args;
-use crate::config::Config; // Assuming Config module exists and has a load function
+use crate::config::{Config, ConfigError}; // Import ConfigError
 use crate::instance_manager::launch_multiple_game_instances;
 use crate::logging::init as init_logging; // Alias to avoid name conflict if another 'init' exists
 use crate::net_emulator::NetEmulator; // Assuming NetEmulator module exists
 use crate::proton_integration::launch_game; // Assuming Proton integration module exists
 use crate::window_manager::{WindowManager, Layout, WindowManagerError}; // Import WindowManagerError
 use crate::input_mux::{InputMux, InputMuxError, DeviceIdentifier}; // Import InputMuxError and DeviceIdentifier
-use std::env;
-use log::{info, error, warn}; // Import warn for consistency
+use std::{env, thread};
+use log::{info, error, warn, debug}; // Import warn and debug for consistency
 use std::path::Path;
 use clap::ArgMatches; // Import ArgMatches
+use std::time::Duration;
 
 fn main() {
     // Initialize the logging system first.
@@ -113,19 +114,40 @@ fn main() {
     let config_path_str = env::var("CONFIG_PATH").unwrap_or_else(|_| "config.toml".to_string());
     let config_path = Path::new(&config_path_str);
     info!("Attempting to load configuration from {}", config_path.display());
+
+    // Use a match statement to handle the ConfigError from load()
     let config = match Config::load(config_path) {
         Ok(cfg) => {
-            info!("Configuration loaded successfully.");
+            info!("Configuration loaded successfully from {}", config_path.display());
             cfg
         }
-        Err(e) => {
-            error!("Failed to load configuration from {}: {}", config_path.display(), e);
-            // Decide if failure to load config is fatal. Often, you'd proceed with defaults
-            // or exit if config is mandatory. Original code exited, so we'll keep that pattern.
+        Err(ConfigError::IoError(io_err)) => {
+             if io_err.kind() == io::ErrorKind::NotFound {
+                  warn!("Configuration file not found at {}. Using default configuration.", config_path.display());
+                  // Return default configuration if the file is not found
+                  Config::default_config()
+             } else {
+                  // Handle other IO errors
+                 error!("Failed to load configuration from {}: I/O Error: {}", config_path.display(), io_err);
+                 std::process::exit(1); // Fatal for other IO errors
+             }
+        }
+        Err(ConfigError::TomlDeError(toml_err)) => {
+            error!("Failed to parse configuration from {}: TOML Error: {}", config_path.display(), toml_err);
+            // TOML parsing errors are usually fatal as the config is malformed
             std::process::exit(1);
         }
+        Err(ConfigError::TomlSeError(_)) => {
+             // Serialization errors should not happen during load, but handle defensively
+             error!("Unexpected configuration serialization error during load from {}.", config_path.display());
+             std::process::exit(1);
+        }
+         Err(ConfigError::GenericError(msg)) => {
+             error!("Generic configuration error during load from {}: {}", config_path.display(), msg);
+             std::process::exit(1);
+         }
     };
-    // You can now use the 'config' object for settings not provided by command line.
+    // You can now use the 'config' object. It will either be loaded from the file or the default.
 
 
     // Launch the required number of game instances
@@ -164,6 +186,7 @@ fn main() {
              // For now, let's skip adding this instance to the emulator and log a warning.
              continue;
          }
+         // Assuming net_emulator.add_instance returns a Result<(), SomeError>
          if let Err(e) = net_emulator.add_instance(pid as u8) { // Assuming add_instance takes a u8 identifier
              error!("Failed to add instance (PID: {}) to net emulator: {}", pid, e);
              // Decide if this failure should be fatal or if the application can continue
@@ -259,7 +282,7 @@ fn main() {
                          error!("Uinput error creating virtual devices: {}", uinput_e);
                      }
                  } else {
-                     error!("Failed to create virtual input devices: {}", uinput_e);
+                     error!("Failed to create virtual input devices: {}", other_error);
                  }
             }
             other_error => {
@@ -378,15 +401,16 @@ fn main() {
 
     // Example using the 'ctrlc' crate (add `ctrlc = "3.2"` to Cargo.toml):
     /*
-    let running = Arc::new(atomic::AtomicBool::new(true));
+    use std::sync::{atomic::{AtomicBool, Ordering}, Arc};
+    let running = Arc::new(AtomicBool::new(true));
     let r = running.clone();
     ctrlc::set_handler(move || {
         info!("Ctrl+C received. Initiating graceful shutdown.");
-        r.store(false, atomic::Ordering::SeqCst);
+        r.store(false, Ordering::SeqCst);
     }).expect("Error setting Ctrl-C handler");
 
     // Wait until Ctrl+C is pressed
-    while running.load(atomic::Ordering::SeqCst) {
+    while running.load(Ordering::SeqCst) {
         thread::sleep(Duration::from_millis(100));
     }
 
@@ -417,3 +441,4 @@ fn main() {
 // Note: Ensure all modules used here (cli, config, instance_manager, logging,
 // net_emulator, proton_integration, window_manager, input_mux) exist and
 // have the expected public functions and types as called in main.rs.
+// Remember to add necessary dependencies (like uinput and tempfile) to your Cargo.toml.
