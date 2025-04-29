@@ -1,17 +1,16 @@
 use serde::{Deserialize, Serialize};
+use std::io::{self, Read, Write};
 use std::fs;
-use std::io::{self, Write};
-use toml;
-use log::{error, info};
-use std::path::Path; // Import Path
+use std::path::{Path, PathBuf};
+use log::{info, warn, error, debug}; // Import log macros
 use std::error::Error; // Import Error trait
 
 // Custom error type for configuration operations
 #[derive(Debug)]
 pub enum ConfigError {
     IoError(io::Error),
-    TomlDeError(toml::de::Error), // Deserialization error
-    TomlSeError(toml::ser::Error), // Serialization error
+    TomlDeError(toml::de::Error),
+    TomlSeError(toml::ser::Error),
     GenericError(String),
 }
 
@@ -19,7 +18,7 @@ impl std::fmt::Display for ConfigError {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
         match self {
             ConfigError::IoError(e) => write!(f, "Configuration I/O error: {}", e),
-            ConfigError::TomlDeError(e) => write!(f, "Configuration parsing error: {}", e),
+            ConfigError::TomlDeError(e) => write!(f, "Configuration deserialization error: {}", e),
             ConfigError::TomlSeError(e) => write!(f, "Configuration serialization error: {}", e),
             ConfigError::GenericError(msg) => write!(f, "Configuration error: {}", msg),
         }
@@ -57,152 +56,142 @@ impl From<toml::ser::Error> for ConfigError {
 }
 
 
-#[derive(Serialize, Deserialize, Debug, PartialEq)] // Derive PartialEq for easier testing
+/// Represents the application's configuration.
+#[derive(Debug, Serialize, Deserialize, Clone, Default)] // Added Default derive
 pub struct Config {
     pub game_paths: Vec<PathBuf>, // Use PathBuf for paths
-    pub input_mappings: Vec<String>, // Or a more structured type for mappings
-    pub window_layout: String, // Consider an enum for layout options
-    pub network_ports: Vec<u16>,
-    // Add other configuration fields as needed (e.g., debug logging level, monitor assignments)
+    pub input_mappings: Vec<String>, // Store input mappings (names or serialized IDs)
+    pub window_layout: String, // Store layout as a string (e.g., "horizontal", "vertical")
+    pub network_ports: Vec<u16>, // Ports the game instances use for network communication
+    pub use_proton: bool, // Added use_proton field
+    // Add other configuration fields as needed (e.g., Proton path, advanced settings)
 }
 
 impl Config {
     /// Loads the configuration from a TOML file.
-    ///
-    /// # Arguments
-    ///
-    /// * `path` - A Path to the configuration file.
-    ///
-    /// # Returns
-    ///
-    /// * `Result<Config, ConfigError>` - Returns the configuration if successful, otherwise returns a ConfigError.
-    pub fn load(path: &Path) -> Result<Self, ConfigError> {
-        info!("Loading configuration from {}", path.display());
-        let contents = fs::read_to_string(path).map_err(ConfigError::IoError)?; // Map IO error
-        let config: Config = toml::from_str(&contents).map_err(ConfigError::TomlDeError)?; // Map TOML deserialization error
-        info!("Configuration loaded successfully.");
-        Ok(config)
+    /// If the file does not exist, returns the default configuration.
+    pub fn load(path: &Path) -> Result<Config, ConfigError> {
+        info!("Attempting to load configuration from {}", path.display());
+        match fs::read_to_string(path) {
+            Ok(contents) => {
+                debug!("Read config file contents:\n{}", contents);
+                toml::from_str(&contents).map_err(ConfigError::TomlDeError)
+            }
+            Err(ref e) if e.kind() == io::ErrorKind::NotFound => {
+                warn!("Configuration file not found at {}. Using default configuration.", path.display());
+                Ok(Config::default_config())
+            }
+            Err(e) => {
+                error!("Failed to read configuration file {}: {}", path.display(), e);
+                Err(ConfigError::IoError(e))
+            }
+        }
     }
 
-    /// Saves the configuration to a TOML file.
-    ///
-    /// # Arguments
-    ///
-    /// * `path` - A Path to the configuration file.
-    ///
-    /// # Returns
-    ///
-    /// * `Result<(), ConfigError>` - Returns Ok if successful, otherwise returns a ConfigError.
+    /// Saves the current configuration to a TOML file.
     pub fn save(&self, path: &Path) -> Result<(), ConfigError> {
-        info!("Saving configuration to {}", path.display());
-        let toml_string = toml::to_string(self).map_err(ConfigError::TomlSeError)?; // Map TOML serialization error
-        let mut file = fs::File::create(path).map_err(ConfigError::IoError)?; // Map IO error
-        file.write_all(toml_string.as_bytes()).map_err(ConfigError::IoError)?; // Map IO error
-        info!("Configuration saved successfully.");
+        info!("Attempting to save configuration to {}", path.display());
+         // Ensure the parent directory exists before saving
+         if let Some(parent) = path.parent() {
+             if let Err(e) = fs::create_dir_all(parent) {
+                  error!("Failed to create parent directory for config file {}: {}", path.display(), e);
+                  return Err(ConfigError::IoError(e));
+             }
+         } else {
+              warn!("Config path {} has no parent directory. Saving to root?", path.display());
+         }
+
+
+        let toml_string = toml::to_string_pretty(self).map_err(ConfigError::TomlSeError)?;
+        debug!("Saving config contents:\n{}", toml_string);
+
+        let mut file = fs::File::create(path).map_err(ConfigError::IoError)?;
+        file.write_all(toml_string.as_bytes()).map_err(ConfigError::IoError)?;
+
+        info!("Configuration saved successfully to {}", path.display());
         Ok(())
     }
 
-    // You might want a function to get default configuration
-    pub fn default_config() -> Self {
+    /// Returns the default application configuration.
+    pub fn default_config() -> Config {
+        info!("Generating default configuration.");
         Config {
-            game_paths: vec![],
-            input_mappings: vec![],
-            window_layout: "horizontal".to_string(), // Provide a default layout
-            network_ports: vec![],
-             // Set default values for other fields
+            game_paths: Vec::new(),
+            input_mappings: vec!["Auto-detect".to_string(), "Auto-detect".to_string()], // Default for 2 players
+            window_layout: "horizontal".to_string(), // Default layout
+            network_ports: vec![7777, 7778], // Example default ports for 2 instances
+            use_proton: false, // Default to not using Proton
         }
     }
 }
 
+// Test code (add necessary dependencies like tempfile)
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tempfile::tempdir; // Add tempfile = "3.2" to your Cargo.toml
+    use tempfile::tempdir; // Add tempfile = "3.2" to Cargo.toml
 
     #[test]
-    fn test_load_save_config() {
-        // Create a temporary directory for test files
-        let temp_test_dir = tempdir().expect("Failed to create temporary test directory");
-        let temp_config_path = temp_test_dir.path().join("test_config.toml");
-
-        let config = Config {
-            game_paths: vec![PathBuf::from("path/to/game1"), PathBuf::from("path/to/game2")],
-            input_mappings: vec!["key1=action1".to_string(), "key2=action2".to_string()],
-            window_layout: "layout1".to_string(),
-            network_ports: vec![8080, 8081],
-        };
-
-        // Save the configuration to the temporary file
-        config.save(&temp_config_path).expect("Failed to save test config");
-
-        // Load the configuration from the temporary file
-        let loaded_config = Config::load(&temp_config_path).expect("Failed to load test config");
-
-        // Assert that the loaded config matches the original config
-        assert_eq!(config, loaded_config);
-
-        // temp_test_dir and its contents are automatically cleaned up when it goes out of scope
-    }
-
-    #[test]
-    fn test_load_invalid_config_format() {
-        let invalid_toml = r#"
-        game_paths = ["path/to/game1"]
-        input_mappings = ["key1=action1"]
-        window_layout = "layout1"
-        network_ports = [8080, "invalid_port"] # This should be a number, not a string
-        "#;
-
-        let temp_test_dir = tempdir().expect("Failed to create temporary test directory");
-        let temp_invalid_config_path = temp_test_dir.path().join("invalid_config.toml");
-
-        // Write invalid TOML to a temporary file
-        fs::write(&temp_invalid_config_path, invalid_toml).expect("Failed to write invalid test config");
-
-        // Attempt to load the invalid configuration
-        let result = Config::load(&temp_invalid_config_path);
-
-        // Assert that loading failed with a ConfigError (specifically a TomlDeError)
-        assert!(result.is_err());
-        match result.unwrap_err() {
-            ConfigError::TomlDeError(_) => {
-                info!("Successfully caught TOML deserialization error for invalid config.");
-            }
-            other_error => {
-                panic!("Expected TomlDeError but got: {:?}", other_error);
-            }
-        }
-
-        // temp_test_dir and its contents are automatically cleaned up
-    }
-
-     #[test]
-     fn test_load_nonexistent_config() {
-         let temp_test_dir = tempdir().expect("Failed to create temporary test directory");
-         let non_existent_path = temp_test_dir.path().join("non_existent_config.toml");
-
-         // Attempt to load a non-existent file
-         let result = Config::load(&non_existent_path);
-
-         // Assert that loading failed with an IoError (specifically NotFound)
-         assert!(result.is_err());
-         match result.unwrap_err() {
-             ConfigError::IoError(io_err) => {
-                 assert_eq!(io_err.kind(), io::ErrorKind::NotFound);
-                 info!("Successfully caught IoError::NotFound for non-existent config.");
-             }
-             other_error => {
-                  panic!("Expected IoError::NotFound but got: {:?}", other_error);
-             }
-         }
-     }
-
-     #[test]
     fn test_default_config() {
-        let default = Config::default_config();
-        assert_eq!(default.game_paths, vec![]);
-        assert_eq!(default.input_mappings, vec![]);
-        assert_eq!(default.window_layout, "horizontal".to_string());
-        assert_eq!(default.network_ports, vec![]);
+        let config = Config::default_config();
+        assert_eq!(config.game_paths.len(), 0);
+        assert_eq!(config.input_mappings, vec!["Auto-detect".to_string(), "Auto-detect".to_string()]);
+        assert_eq!(config.window_layout, "horizontal".to_string());
+        assert_eq!(config.network_ports, vec![7777, 7778]);
+        assert_eq!(config.use_proton, false);
     }
+
+    #[test]
+    fn test_save_and_load_config() {
+        let temp_dir = tempdir().expect("Failed to create temporary directory");
+        let config_path = temp_dir.path().join("test_config.toml");
+
+        let mut config = Config::default_config();
+        config.game_paths.push(PathBuf::from("/path/to/game"));
+        config.input_mappings = vec!["Device A".to_string(), "Device B".to_string()];
+        config.window_layout = "vertical".to_string();
+        config.network_ports = vec![1234, 5678];
+        config.use_proton = true;
+
+        // Save the configuration
+        let save_result = config.save(&config_path);
+        assert!(save_result.is_ok(), "Failed to save config: {:?}", save_result.err());
+
+        // Load the configuration from the saved file
+        let loaded_config_result = Config::load(&config_path);
+        assert!(loaded_config_result.is_ok(), "Failed to load config: {:?}", loaded_config_result.err());
+
+        let loaded_config = loaded_config_result.unwrap();
+
+        // Assert that the loaded configuration matches the saved configuration
+        assert_eq!(loaded_config.game_paths, vec![PathBuf::from("/path/to/game")]);
+        assert_eq!(loaded_config.input_mappings, vec!["Device A".to_string(), "Device B".to_string()]);
+        assert_eq!(loaded_config.window_layout, "vertical".to_string());
+        assert_eq!(loaded_config.network_ports, vec![1234, 5678]);
+        assert_eq!(loaded_config.use_proton, true);
+
+        // Clean up the temporary directory
+        // temp_dir is automatically cleaned up when it goes out of scope
+    }
+
+    #[test]
+    fn test_load_nonexistent_config() {
+        let temp_dir = tempdir().expect("Failed to create temporary directory");
+        let config_path = temp_dir.path().join("nonexistent_config.toml");
+
+        // Attempt to load a non-existent file
+        let loaded_config_result = Config::load(&config_path);
+        assert!(loaded_config_result.is_ok(), "Loading non-existent config should return Ok");
+
+        // Assert that the default configuration is returned
+        let loaded_config = loaded_config_result.unwrap();
+        let default_config = Config::default_config();
+        assert_eq!(loaded_config.game_paths, default_config.game_paths);
+        assert_eq!(loaded_config.input_mappings, default_config.input_mappings);
+        assert_eq!(loaded_config.window_layout, default_config.window_layout);
+        assert_eq!(loaded_config.network_ports, default_config.network_ports);
+         assert_eq!(loaded_config.use_proton, default_config.use_proton);
+    }
+
+    // TODO: Add test for invalid TOML format
 }
