@@ -62,7 +62,7 @@ use crate::logging::init as init_logging; // Alias to avoid name conflict if ano
 use crate::net_emulator::{NetEmulator, NetEmulatorError}; // Import NetEmulatorError
 use crate::window_manager::{WindowManager, Layout, WindowManagerError}; // Import WindowManagerError
 use crate::input_mux::{InputMux, InputMuxError, DeviceIdentifier, InputAssignment}; // Import InputMuxError, DeviceIdentifier, InputAssignment
-use std::{env, thread};
+use std::{env, thread, io}; // Import io
 use log::{info, error, warn, debug}; // Import warn and debug for consistency
 use std::path::{Path, PathBuf}; // Import Path and PathBuf
 use clap::{ArgMatches, Arg, Command}; // Import Command for helper
@@ -74,6 +74,7 @@ use log::SetLoggerError; // Import SetLoggerError
 use std::error::Error; // Import Error trait for boxed errors in run_core_logic
 use std::net::SocketAddr; // Import SocketAddr
 use ctrlc; // Import ctrlc for graceful shutdown
+use std::sync::{atomic::{AtomicBool, Ordering}, Arc}; // Import for graceful shutdown flag
 
 
 // Assuming your GUI code is in src/gui.rs and has a public run_gui function
@@ -233,14 +234,6 @@ pub fn run_core_logic(
                       // The emulator listens on E_i and E_j.
                       // Traffic received BY emulator on E_i (from game i's perspective)
                       // needs to be sent TO emulator on E_j (to reach game j via its emulator socket).
-
-                      // Let's try a simpler interpretation based on the 'mappings' HashMap in NetEmulator:
-                      // It maps *source* SocketAddr to *destination* SocketAddr.
-                      // If game instance i is sending, its source SocketAddr will be dynamic.
-                      // The destination SocketAddr (127.0.0.1:Pgame_j) is what we know from game logic/config.
-                      // So, when emulator receives a packet from *any* source SocketAddr,
-                      // if its *destination* (in the IP packet header) is 127.0.0.1:Pgame_j,
-                      // we should route it to the emulator's socket for instance j.
 
                       // The current NetEmulator maps based on *source* SocketAddr. This is incorrect
                       // for redirecting traffic destined for other instances.
@@ -576,7 +569,7 @@ fn main() {
          );
 
 
-         let (net_emulator, input_mux) = match core_result {
+         let (mut net_emulator, mut input_mux) = match core_result { // Make instances mutable
              Ok((net_emu, input_mux)) => {
                  info!("Core application logic finished successfully.");
                  (net_emu, input_mux) // Store the instances
@@ -590,10 +583,9 @@ fn main() {
 
         // Main application loop/wait in CLI mode
         info!("Hydra Co-op is running in CLI mode. Background services started.");
-        info!("Press Ctrl+C to initiate shutdown.");
+        info!("Press Ctrl+C to initiate graceful shutdown.");
 
         // Use ctrlc for graceful shutdown in CLI mode
-        use std::sync::{atomic::{AtomicBool, Ordering}, Arc};
         let running = Arc::new(AtomicBool::new(true));
         let r = running.clone();
         ctrlc::set_handler(move || {
@@ -604,24 +596,46 @@ fn main() {
         // Wait until Ctrl+C is pressed
         while running.load(Ordering::SeqCst) {
              // TODO: Check if game instances are still running and exit if all have quit.
+             // This would involve keeping track of the Child processes returned by launch_multiple_game_instances
+             // and periodically checking their status (e.g., using try_wait()).
             thread::sleep(Duration::from_millis(100));
         }
 
         info!("Shutdown sequence started. Stopping background services...");
-        // Stop background threads gracefully
+
+        // Stop background threads gracefully and wait for them to join
         if let Err(e) = net_emulator.stop_relay() {
              error!("Error stopping network relay during shutdown: {}", e);
         } else {
-             info!("Network relay stopped.");
+             info!("Network relay stop signal sent.");
+             // Wait for the network relay thread to finish
+             if let Some(handle) = net_emulator.join_relay() {
+                 match handle.join() {
+                     Ok(_) => info!("Network relay thread joined successfully."),
+                     Err(e) => error!("Error joining network relay thread: {:?}", e), // Thread panicked
+                 }
+             } else {
+                 debug!("Network relay thread handle not available to join.");
+             }
         }
+
         if let Err(e) = input_mux.stop_capture() {
              error!("Error stopping input capture during shutdown: {}", e);
         } else {
-             info!("Input capture stopped.");
+             info!("Input capture stop signal sent.");
+             // Wait for the input capture thread to finish
+             if let Some(handle) = input_mux.join_capture() {
+                 match handle.join() {
+                     Ok(_) => info!("Input capture thread joined successfully."),
+                     Err(e) => error!("Error joining input capture thread: {:?}", e), // Thread panicked
+                 }
+             } else {
+                 debug!("Input capture thread handle not available to join.");
+             }
         }
 
-         // TODO: Clean up temporary WINEPREFIX directories if created
-         // TODO: Wait for game instances to exit gracefully
+         // TODO: Implement graceful shutdown for game instances (e.g., sending signals)
+         // TODO: Clean up temporary WINEPREFIX directories if created (only if use_proton is true and they were created)
 
         info!("Background services stopped. Exiting application.");
     }
