@@ -4,6 +4,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use log::{info, warn, error, debug}; // Import log macros
 use std::error::Error; // Import Error trait
+use toml; // Explicitly import toml
 
 // Custom error type for configuration operations
 #[derive(Debug)]
@@ -75,13 +76,16 @@ impl Config {
         match fs::read_to_string(path) {
             Ok(contents) => {
                 debug!("Read config file contents:\n{}", contents);
-                toml::from_str(&contents).map_err(ConfigError::TomlDeError)
+                // Use the ? operator after mapping the error
+                let config: Config = toml::from_str(&contents)?;
+                Ok(config)
             }
             Err(ref e) if e.kind() == io::ErrorKind::NotFound => {
                 warn!("Configuration file not found at {}. Using default configuration.", path.display());
                 Ok(Config::default_config())
             }
             Err(e) => {
+                // Map other IO errors and use ?
                 error!("Failed to read configuration file {}: {}", path.display(), e);
                 Err(ConfigError::IoError(e))
             }
@@ -91,22 +95,23 @@ impl Config {
     /// Saves the current configuration to a TOML file.
     pub fn save(&self, path: &Path) -> Result<(), ConfigError> {
         info!("Attempting to save configuration to {}", path.display());
-         // Ensure the parent directory exists before saving
-         if let Some(parent) = path.parent() {
-             if let Err(e) = fs::create_dir_all(parent) {
-                  error!("Failed to create parent directory for config file {}: {}", path.display(), e);
-                  return Err(ConfigError::IoError(e));
-             }
-         } else {
-              warn!("Config path {} has no parent directory. Saving to root?", path.display());
-         }
 
+        // Ensure the parent directory exists before saving
+        if let Some(parent) = path.parent() {
+            // Use ? operator for directory creation and map the error
+            fs::create_dir_all(parent).map_err(ConfigError::IoError)?;
+        } else {
+            warn!("Config path {} has no parent directory. Saving to root?", path.display());
+        }
 
-        let toml_string = toml::to_string_pretty(self).map_err(ConfigError::TomlSeError)?;
+        // Use ? operator after mapping the serialization error
+        let toml_string = toml::to_string_pretty(self)?;
         debug!("Saving config contents:\n{}", toml_string);
 
-        let mut file = fs::File::create(path).map_err(ConfigError::IoError)?;
-        file.write_all(toml_string.as_bytes()).map_err(ConfigError::IoError)?;
+        // Use ? operator for file creation and map the error
+        let mut file = fs::File::create(path)?;
+        // Use ? operator for writing and map the error
+        file.write_all(toml_string.as_bytes())?;
 
         info!("Configuration saved successfully to {}", path.display());
         Ok(())
@@ -130,9 +135,17 @@ impl Config {
 mod tests {
     use super::*;
     use tempfile::tempdir; // Add tempfile = "3.2" to Cargo.toml
+    use std::fs;
+
+    // Helper to set up a basic logger for tests if needed
+    // use env_logger;
+    // fn setup_logger() {
+    //     let _ = env_logger::builder().is_test(true).try_init();
+    // }
 
     #[test]
     fn test_default_config() {
+        // setup_logger();
         let config = Config::default_config();
         assert_eq!(config.game_paths.len(), 0);
         assert_eq!(config.input_mappings, vec!["Auto-detect".to_string(), "Auto-detect".to_string()]);
@@ -143,6 +156,7 @@ mod tests {
 
     #[test]
     fn test_save_and_load_config() {
+        // setup_logger();
         let temp_dir = tempdir().expect("Failed to create temporary directory");
         let config_path = temp_dir.path().join("test_config.toml");
 
@@ -156,6 +170,9 @@ mod tests {
         // Save the configuration
         let save_result = config.save(&config_path);
         assert!(save_result.is_ok(), "Failed to save config: {:?}", save_result.err());
+
+        // Check if the file was actually created
+        assert!(config_path.exists());
 
         // Load the configuration from the saved file
         let loaded_config_result = Config::load(&config_path);
@@ -176,6 +193,7 @@ mod tests {
 
     #[test]
     fn test_load_nonexistent_config() {
+        // setup_logger();
         let temp_dir = tempdir().expect("Failed to create temporary directory");
         let config_path = temp_dir.path().join("nonexistent_config.toml");
 
@@ -190,8 +208,55 @@ mod tests {
         assert_eq!(loaded_config.input_mappings, default_config.input_mappings);
         assert_eq!(loaded_config.window_layout, default_config.window_layout);
         assert_eq!(loaded_config.network_ports, default_config.network_ports);
-         assert_eq!(loaded_config.use_proton, default_config.use_proton);
+        assert_eq!(loaded_config.use_proton, default_config.use_proton);
     }
 
-    // TODO: Add test for invalid TOML format
+    #[test]
+    fn test_save_to_nonexistent_directory() {
+         // setup_logger();
+         let temp_dir = tempdir().expect("Failed to create temporary directory");
+         let non_existent_subdir = temp_dir.path().join("non_existent_subdir");
+         let config_path = non_existent_subdir.join("test_config_in_subdir.toml");
+
+         let config = Config::default_config();
+
+         // Save the configuration to a path in a non-existent directory
+         let save_result = config.save(&config_path);
+         assert!(save_result.is_ok(), "Failed to save config to non-existent directory: {:?}", save_result.err());
+
+         // Check if the directory and file were created
+         assert!(non_existent_subdir.exists());
+         assert!(config_path.exists());
+
+         // Clean up the temporary directory
+         // temp_dir is automatically cleaned up when it goes out of scope
+    }
+
+     #[test]
+     fn test_load_invalid_toml() {
+         // setup_logger();
+         let temp_dir = tempdir().expect("Failed to create temporary directory");
+         let config_path = temp_dir.path().join("invalid_config.toml");
+
+         // Write invalid TOML content to the file
+         let invalid_toml = r#"
+         game_paths = [ "/path/to/game"
+         input_mappings = ["Device A", "Device B"]
+         "#; // Missing closing bracket for game_paths
+
+         fs::write(&config_path, invalid_toml).expect("Failed to write invalid TOML");
+
+         // Attempt to load the invalid configuration
+         let loaded_config_result = Config::load(&config_path);
+
+         // Assert that the loading failed with a TomlDeError
+         assert!(loaded_config_result.is_err());
+         match loaded_config_result.unwrap_err() {
+             ConfigError::TomlDeError(_) => { /* Correct error type */ },
+             other => panic!("Expected TomlDeError, but got {:?}", other),
+         }
+
+         // Clean up the temporary directory
+         // temp_dir is automatically cleaned up when it goes out of scope
+     }
 }
