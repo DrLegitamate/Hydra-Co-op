@@ -1,11 +1,11 @@
 use std::env;
 use std::fs::File;
 use std::io::{self, Read};
-use std::path::{Path, PathBuf}; // Import PathBuf
-use std::process::{Command, Stdio, Child}; // Import Child
+use std::path::{Path, PathBuf};
+use std::process::{Command, Stdio, Child};
 use std::str;
-use log::{info, error, warn, debug}; // Import logging macros
-use std::error::Error; // Import Error trait
+use log::{info, error, warn, debug};
+use std::error::Error;
 
 // Custom error type for Proton integration operations
 #[derive(Debug)]
@@ -47,7 +47,7 @@ impl From<io::Error> for ProtonError {
 
 /// Checks if the given file is a likely Windows PE (Portable Executable) binary.
 /// This is a basic check based on the "MZ" header. It's not foolproof.
-fn is_windows_binary(file_path: &Path) -> Result<bool, ProtonError> {
+pub fn is_windows_binary(file_path: &Path) -> Result<bool, ProtonError> {
     debug!("Checking if file is a Windows binary: {}", file_path.display());
     let mut file = match File::open(file_path) {
         Ok(file) => file,
@@ -78,12 +78,14 @@ fn is_windows_binary(file_path: &Path) -> Result<bool, ProtonError> {
 /// 1. Check PROTON_PATH environment variable.
 /// 2. Search common Steam Library folders (requires knowing Steam's structure).
 /// 3. Rely on user configuration (e.g., in config.toml).
-/// 4. Use tools like `steam-run` or `protondb` if available.
+///
+/// This function is intended to be called once by the instance manager
+/// before launching multiple game instances.
 ///
 /// # Returns
 ///
 /// * `Result<PathBuf, ProtonError>` - The path to the Proton executable if found.
-fn find_proton_path() -> Result<PathBuf, ProtonError> {
+pub fn find_proton_path() -> Result<PathBuf, ProtonError> {
     info!("Attempting to find Proton executable.");
 
     // 1. Check PROTON_PATH environment variable
@@ -135,7 +137,8 @@ fn find_proton_path() -> Result<PathBuf, ProtonError> {
 
 /// Prepares a Command to be run with Proton.
 /// This function should be called by the instance manager when launching a game
-/// that requires Proton.
+/// that requires Proton. It configures the command, including setting the
+/// WINEPREFIX for the specific instance.
 ///
 /// # Arguments
 ///
@@ -191,53 +194,8 @@ pub fn prepare_command_with_proton(
     Ok(command)
 }
 
-// The top-level launch_game function might be removed or refactored.
-// The responsibility of launching should be with the instance manager.
-/*
-/// Main function to handle launching a Windows game via Proton.
-/// This function's role might change to be more of a helper or
-/// discovery function called by the instance manager.
-pub fn launch_game(game_path: &Path) -> Result<Child, ProtonError> { // Changed return type to Child
-     info!("Attempting to launch game with Proton: {}", game_path.display());
-
-     // Check if the file is a Windows binary (optional but helpful)
-     match is_windows_binary(game_path) {
-         Ok(true) => info!("File appears to be a Windows binary."),
-         Ok(false) => {
-             warn!("File '{}' does not appear to be a Windows binary based on MZ header check.", game_path.display());
-             // Decide if this should be a fatal error or a warning allowing launch anyway.
-             // For now, let's treat it as a potential issue but allow launch.
-             // return Err(ProtonError::NotWindowsBinary(game_path.to_path_buf()));
-         }
-         Err(e) => {
-              error!("Error checking if file is Windows binary: {}", e);
-              // Decide if this error should prevent launch
-              // return Err(e);
-         }
-     }
-
-
-     let proton_path = find_proton_path()?; // Use the improved find_proton_path
-
-     // This top-level function can't easily manage WINEPREFIX for multiple instances.
-     // This logic needs to be integrated into the instance_manager's launch loop.
-     // The WINEPREFIX base directory needs to be decided (e.g., in config or a temp dir).
-     let base_wineprefix_dir = PathBuf::from("/tmp/hydra_wineprefixes"); // Example base directory
-
-     // This part of the logic is more suitable for the instance manager
-     // as it ties the launched Child process to a specific instance index and WINEPREFIX.
-     error!("The top-level launch_game function in proton_integration is not suitable for multi-instance WINEPREFIX management and should be refactored.");
-     return Err(ProtonError::GenericError("Proton launch logic needs to be integrated with instance manager.".to_string()));
-
-
-     // Example of how prepare_command_with_proton would be used (in instance_manager)
-     // let instance_index = 0; // This would come from the loop in instance_manager
-     // let mut command = prepare_command_with_proton(game_path, &proton_path, instance_index, &base_wineprefix_dir)?;
-     // let child = command.spawn().map_err(|e| ProtonError::LaunchFailed(format!("Failed to spawn Proton command: {}", e)))?;
-     // info!("Proton process launched with PID: {}", child.id());
-     // Ok(child) // Return the Child process
-}
-*/
+// The top-level launch_game function has been removed as its logic is
+// now handled by the instance manager.
 
 // Test code moved into a test module
 #[cfg(test)]
@@ -245,6 +203,7 @@ mod tests {
     use super::*;
     use tempfile::tempdir; // Add tempfile = "3.2" to your Cargo.toml
     use std::fs;
+    use std::collections::HashMap; // Import HashMap
 
     #[test]
     fn test_is_windows_binary_mz_header() {
