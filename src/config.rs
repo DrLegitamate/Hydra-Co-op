@@ -6,6 +6,36 @@ use log::{info, warn, error, debug}; // Import log macros
 use std::error::Error; // Import Error trait
 use toml; // Explicitly import toml
 
+/// Configuration validation errors
+#[derive(Debug)]
+pub enum ValidationError {
+    InvalidInstanceCount(usize),
+    InvalidNetworkPort(u16),
+    MissingGamePath,
+    InvalidGamePath(PathBuf),
+}
+
+impl std::fmt::Display for ValidationError {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        match self {
+            ValidationError::InvalidInstanceCount(count) => {
+                write!(f, "Invalid instance count: {}. Must be between 1 and {}", count, crate::defaults::MAX_INSTANCES)
+            }
+            ValidationError::InvalidNetworkPort(port) => {
+                write!(f, "Invalid network port: {}. Must be between 1024 and 65535", port)
+            }
+            ValidationError::MissingGamePath => {
+                write!(f, "No game executable path specified")
+            }
+            ValidationError::InvalidGamePath(path) => {
+                write!(f, "Invalid game executable path: {}", path.display())
+            }
+        }
+    }
+}
+
+impl std::error::Error for ValidationError {}
+
 // Custom error type for configuration operations
 #[derive(Debug)]
 pub enum ConfigError {
@@ -13,6 +43,7 @@ pub enum ConfigError {
     TomlDeError(toml::de::Error),
     TomlSeError(toml::ser::Error),
     GenericError(String),
+    Validation(ValidationError),
 }
 
 impl std::fmt::Display for ConfigError {
@@ -22,6 +53,7 @@ impl std::fmt::Display for ConfigError {
             ConfigError::TomlDeError(e) => write!(f, "Configuration deserialization error: {}", e),
             ConfigError::TomlSeError(e) => write!(f, "Configuration serialization error: {}", e),
             ConfigError::GenericError(msg) => write!(f, "Configuration error: {}", msg),
+            ConfigError::Validation(e) => write!(f, "Configuration validation error: {}", e),
         }
     }
 }
@@ -32,6 +64,7 @@ impl Error for ConfigError {
             ConfigError::IoError(e) => Some(e),
             ConfigError::TomlDeError(e) => Some(e),
             ConfigError::TomlSeError(e) => Some(e),
+            ConfigError::Validation(e) => Some(e),
             _ => None,
         }
     }
@@ -56,6 +89,11 @@ impl From<toml::ser::Error> for ConfigError {
     }
 }
 
+impl From<ValidationError> for ConfigError {
+    fn from(err: ValidationError) -> Self {
+        ConfigError::Validation(err)
+    }
+}
 
 /// Represents the application's configuration.
 #[derive(Debug, Serialize, Deserialize, Clone, Default)] // Added Default derive
@@ -127,6 +165,63 @@ impl Config {
             network_ports: vec![7777, 7778], // Example default ports for 2 instances
             use_proton: false, // Default to not using Proton
         }
+    }
+    
+    /// Validate the configuration
+    pub fn validate(&self) -> Result<(), ConfigError> {
+        // Validate game paths
+        if self.game_paths.is_empty() {
+            return Err(ValidationError::MissingGamePath.into());
+        }
+        
+        for path in &self.game_paths {
+            if !path.exists() {
+                return Err(ValidationError::InvalidGamePath(path.clone()).into());
+            }
+        }
+        
+        // Validate instance count based on input mappings
+        let instance_count = self.input_mappings.len();
+        if instance_count == 0 || instance_count > crate::defaults::MAX_INSTANCES {
+            return Err(ValidationError::InvalidInstanceCount(instance_count).into());
+        }
+        
+        // Validate network ports
+        for &port in &self.network_ports {
+            if port < 1024 || port == 0 {
+                return Err(ValidationError::InvalidNetworkPort(port).into());
+            }
+        }
+        
+        Ok(())
+    }
+    
+    /// Get the primary game executable path
+    pub fn primary_game_path(&self) -> Option<&PathBuf> {
+        self.game_paths.first()
+    }
+    
+    /// Get the number of instances based on input mappings
+    pub fn instance_count(&self) -> usize {
+        self.input_mappings.len().max(1)
+    }
+    
+    /// Merge this configuration with another, with the other taking precedence
+    pub fn merge_with(&mut self, other: Config) {
+        if !other.game_paths.is_empty() {
+            self.game_paths = other.game_paths;
+        }
+        if !other.input_mappings.is_empty() {
+            self.input_mappings = other.input_mappings;
+        }
+        if other.window_layout != "horizontal" {
+            self.window_layout = other.window_layout;
+        }
+        if !other.network_ports.is_empty() {
+            self.network_ports = other.network_ports;
+        }
+        // use_proton is always merged
+        self.use_proton = other.use_proton;
     }
 }
 

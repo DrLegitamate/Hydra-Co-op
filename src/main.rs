@@ -55,13 +55,25 @@
 // +-----------------------------+
 
 
-use crate::cli::parse_args; // We won't directly use parse_args from cli anymore, but build_cli is used
-use crate::config::{Config, ConfigError}; // Import ConfigError
-use crate::instance_manager::{launch_multiple_game_instances, InstanceManagerError}; // Import InstanceManagerError
-use crate::logging::init as init_logging; // Alias to avoid name conflict if another 'init' exists
-use crate::net_emulator::{NetEmulator, NetEmulatorError}; // Import NetEmulatorError
-use crate::window_manager::{WindowManager, Layout, WindowManagerError}; // Import WindowManagerError
-use crate::input_mux::{InputMux, InputMuxError, DeviceIdentifier, InputAssignment}; // Import InputMuxError, DeviceIdentifier, InputAssignment
+// Declare modules
+mod cli;
+mod config;
+mod errors;
+mod gui;
+mod input_mux;
+mod instance_manager;
+mod logging;
+mod net_emulator;
+mod proton_integration;
+mod window_manager;
+
+use errors::{HydraError, Result};
+use config::Config;
+use instance_manager::launch_multiple_game_instances;
+use logging::init as init_logging;
+use net_emulator::NetEmulator;
+use window_manager::{WindowManager, Layout};
+use input_mux::{InputMux, DeviceIdentifier, InputAssignment};
 use std::{env, thread, io}; // Import io
 use log::{info, error, warn, debug}; // Import warn and debug for consistency
 use std::path::{Path, PathBuf}; // Import Path and PathBuf
@@ -70,15 +82,10 @@ use std::time::Duration;
 use std::collections::HashMap; // Import HashMap
 use std::process::Child; // Import Child if needed for instance management
 use std::fs; // Import fs for creating WINEPREFIX base directory
-use log::SetLoggerError; // Import SetLoggerError
-use std::error::Error; // Import Error trait for boxed errors in run_core_logic
 use std::net::SocketAddr; // Import SocketAddr
 use ctrlc; // Import ctrlc for graceful shutdown
 use std::sync::{atomic::{AtomicBool, Ordering}, Arc}; // Import for graceful shutdown flag
 
-
-// Assuming your GUI code is in src/gui.rs and has a public run_gui function
-mod gui; // Declare the gui module
 
 
 /// Encapsulates the core application logic: launching instances, setting up
@@ -89,7 +96,7 @@ mod gui; // Declare the gui module
 ///
 /// * `Result<(NetEmulator, InputMux), Box<dyn Error>>` - Returns the initialized
 ///   NetEmulator and InputMux instances if successful, otherwise returns a boxed error.
-pub fn run_core_logic(
+fn run_core_logic(
     game_executable_path: &Path,
     instances_usize: usize,
     input_assignments: &[(usize, InputAssignment)], // Use InputAssignment
@@ -97,7 +104,20 @@ pub fn run_core_logic(
     use_proton: bool,
     config: &Config, // Pass the loaded configuration
     // Potentially pass other necessary data like network mapping config
-) -> Result<(NetEmulator, InputMux), Box<dyn Error>> { // Return instances
+) -> Result<(NetEmulator, InputMux)> {
+    // Validate inputs
+    if instances_usize == 0 {
+        return Err(HydraError::validation("Number of instances must be at least 1"));
+    }
+    
+    if instances_usize > crate::defaults::MAX_INSTANCES {
+        return Err(HydraError::validation(format!(
+            "Number of instances ({}) exceeds maximum ({})", 
+            instances_usize, 
+            crate::defaults::MAX_INSTANCES
+        )));
+    }
+    
     info!("Running core application logic.");
     debug!("  Game Executable: {}", game_executable_path.display());
     debug!("  Number of Instances: {}", instances_usize);
@@ -120,7 +140,7 @@ pub fn run_core_logic(
          if let Err(e) = fs::create_dir_all(&dir) {
               error!("Failed to create base WINEPREFIX directory {}: {}", dir.display(), e);
               // This is a fatal error if we need to create WINEPREFIXes
-              return Err(Box::new(InstanceManagerError::IoError(e))); // Return as boxed error
+              return Err(HydraError::Io(e));
          }
          dir
 
@@ -138,7 +158,7 @@ pub fn run_core_logic(
         instances_usize,
         use_proton,
         &base_wineprefix_dir,
-    ).map_err(|e| Box::new(e) as Box<dyn Error>)?; // Map InstanceManagerError to boxed error
+    )?;
 
 
     // Note: At this point, the game processes are started, but their windows
@@ -300,17 +320,17 @@ pub fn run_core_logic(
 
     // Start the network relay thread
     info!("Starting network emulator relay.");
-    net_emulator.start_relay().map_err(|e| Box::new(e) as Box<dyn Error>)?; // Map and return NetEmulatorError
+    net_emulator.start_relay()?;
 
 
     // Adjust the windows using the window management module
-    let window_manager = WindowManager::new().map_err(|e| Box::new(e) as Box<dyn Error>)?; // Map and return WindowManagerError
+    let window_manager = WindowManager::new()?;
 
     // Collect the PIDs of the launched game instances for the window manager
     let game_instance_pids: Vec<u32> = game_instances.iter().map(|instance| instance.id()).collect();
     info!("Attempting to set window layout for PIDs: {:?}", game_instance_pids);
 
-    window_manager.set_layout(&game_instance_pids, layout).map_err(|e| Box::new(e) as Box<dyn Error>)?; // Map and return WindowManagerError
+    window_manager.set_layout(&game_instance_pids, layout)?;
 
 
     // Initialize the input multiplexer
@@ -323,7 +343,7 @@ pub fn run_core_logic(
     // Let's assume the list of available devices is passed or accessible.
     // For simplicity in CLI path, we re-enumerate here.
      info!("Enumerating physical input devices (in core logic).");
-     input_mux.enumerate_devices().map_err(|e| Box::new(e) as Box<dyn Error>)?; // Map and return InputMuxError
+     input_mux.enumerate_devices()?;
      // The available_devices list is not directly used here anymore;
      // the mapping is based on the InputAssignment vector passed to capture_events.
      // let available_devices = input_mux.get_available_devices();
@@ -332,12 +352,12 @@ pub fn run_core_logic(
 
 
     info!("Creating virtual input devices for {} instances.", instances_usize);
-    input_mux.create_virtual_devices(instances_usize).map_err(|e| Box::new(e) as Box<dyn Error>)?; // Map and return InputMuxError
+    input_mux.create_virtual_devices(instances_usize)?;
     info!("Virtual input devices created.");
 
     // Capture input events based on the provided input assignments
     info!("Starting input event capture and routing.");
-    input_mux.capture_events(input_assignments).map_err(|e| Box::new(e) as Box<dyn Error>)?; // Pass and map input_assignments
+    input_mux.capture_events(input_assignments)?;
     info!("Input event capture started. Background threads are running.");
 
 
@@ -354,6 +374,21 @@ pub fn run_core_logic(
 
 
 fn main() {
+    // Set up panic hook for better error reporting
+    std::panic::set_hook(Box::new(|panic_info| {
+        error!("Application panicked: {}", panic_info);
+        if let Some(location) = panic_info.location() {
+            error!("Panic occurred in file '{}' at line {}", location.file(), location.line());
+        }
+    }));
+    
+    if let Err(e) = run_application() {
+        error!("Application failed: {}", e);
+        std::process::exit(1);
+    }
+}
+
+fn run_application() -> Result<()> {
     // Initialize the logging system first.
     // Configure the log level based on environment variables (e.g., RUST_LOG)
     // before calling init_logging().
@@ -373,8 +408,14 @@ fn main() {
     }
 
     match init_logging() {
-        Ok(_) => info!("Logging initialized."),
-        Err(e) => eprintln!("Error initializing logging: {}", e), // Use eprintln as logger might not be fully ready
+        Ok(_) => {
+            info!("Logging initialized.");
+            info!("Starting {} v{}", crate::APP_NAME, crate::APP_VERSION);
+        }
+        Err(e) => {
+            eprintln!("Error initializing logging: {}", e);
+            return Err(HydraError::Logging(e));
+        }
     }
 
 
@@ -411,16 +452,15 @@ fn main() {
 
 
         // Load configuration before starting the GUI to populate it with existing settings.
-        let config_path_str = env::var("CONFIG_PATH").unwrap_or_else(|_| "config.toml".to_string());
-        let config_path = Path::new(&config_path_str);
+        let config_path = get_config_path()?;
         info!("Attempting to load configuration from {}", config_path.display());
 
-        let config = match Config::load(config_path) {
+        let config = match Config::load(&config_path) {
             Ok(cfg) => {
                 info!("Configuration loaded successfully from {}", config_path.display());
                 cfg
             }
-            Err(ConfigError::IoError(io_err)) => {
+            Err(config::ConfigError::IoError(io_err)) => {
                  if io_err.kind() == io::ErrorKind::NotFound {
                       warn!("Configuration file not found at {}. Using default configuration.", config_path.display());
                       Config::default_config()
@@ -439,11 +479,15 @@ fn main() {
         };
          info!("Configuration loaded or defaulted for GUI.");
 
+        // Validate configuration
+        if let Err(e) = config.validate() {
+            warn!("Configuration validation failed: {}. Using defaults where needed.", e);
+        }
 
         // Pass the enumerated devices and loaded config to the GUI
          if let Err(e) = gui::run_gui(available_devices, config) { // Pass data to run_gui
              error!("GUI application failed: {}", e);
-             std::process::exit(1);
+             return Err(HydraError::application(format!("GUI failed: {}", e)));
          }
          // The GUI's app.run() is a blocking call. Once it exits, the application exits.
          info!("GUI application finished.");
@@ -481,29 +525,32 @@ fn main() {
 
 
         // Load user configuration (in CLI mode, configuration might provide defaults or override CLI args)
-        let config_path_str = env::var("CONFIG_PATH").unwrap_or_else(|_| "config.toml".to_string());
-        let config_path = Path::new(&config_path_str);
+        let config_path = get_config_path()?;
         info!("Attempting to load configuration from {}", config_path.display());
 
-        let config = match Config::load(config_path) {
+        let config = match Config::load(&config_path) {
             Ok(cfg) => {
                 info!("Configuration loaded successfully from {}", config_path.display());
                 cfg
             }
-            Err(ConfigError::IoError(io_err)) => {
+            Err(config::ConfigError::IoError(io_err)) => {
                  if io_err.kind() == io::ErrorKind::NotFound {
                       warn!("Configuration file not found at {}. Using default configuration.", config_path.display());
                       Config::default_config()
                  } else {
                       error!("Failed to load configuration from {}: I/O Error: {}", config_path.display(), io_err);
-                      std::process::exit(1); // Fatal for other IO errors
+                      return Err(HydraError::Config(config::ConfigError::IoError(io_err)));
                  }
             }
             Err(e) => { // Catch other ConfigError variants
                 error!("Failed to load configuration from {}: {}", config_path.display(), e);
-                std::process::exit(1);
+                return Err(HydraError::Config(e));
             }
         };
+        
+        // Validate configuration
+        config.validate()?;
+        
         // TODO: Implement logic to combine command-line arguments and configuration settings.
         // Command-line arguments should typically override configuration file settings.
         // For use_proton, the CLI arg should override config if provided.
@@ -576,7 +623,7 @@ fn main() {
              },
              Err(e) => {
                  error!("Core application logic failed: {}", e);
-                 std::process::exit(1);
+                 return Err(e);
              }
          };
 
@@ -640,6 +687,18 @@ fn main() {
         info!("Background services stopped. Exiting application.");
     }
 
+    Ok(())
+}
+
+/// Get the configuration file path
+fn get_config_path() -> Result<PathBuf> {
+    if let Ok(config_path_str) = env::var("CONFIG_PATH") {
+        Ok(PathBuf::from(config_path_str))
+    } else {
+        let config_dir = crate::utils::get_config_dir()?;
+        crate::utils::ensure_dir_exists(&config_dir)?;
+        Ok(config_dir.join("config.toml"))
+    }
 }
 
 // Helper function for early parsing of args (just for debug flag)

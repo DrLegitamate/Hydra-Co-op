@@ -10,6 +10,8 @@ use std::thread::{self, JoinHandle}; // Import JoinHandle
 use std::time::Duration;
 use std::sync::atomic::{AtomicBool, Ordering}; // Import AtomicBool and Ordering
 
+// Import serde for serialization support
+use serde::{Deserialize, Serialize};
 // We will use the uinput-rs crate for creating virtual input devices.
 // Add this to your Cargo.toml:
 // [dependencies]
@@ -76,7 +78,7 @@ impl From<uinput::Error> for InputMuxError {
 
 /// Represents information needed to identify and map an input device.
 /// Using name, physical location, and ID for more robust identification than just path.
-#[derive(Debug, Clone, Hash, PartialEq, Eq)]
+#[derive(Debug, Clone, Hash, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DeviceIdentifier { // Made pub
     pub name: String, // Made pub
     pub phys: Option<String>, // Made pub
@@ -86,6 +88,16 @@ pub struct DeviceIdentifier { // Made pub
     pub version: u16, // Made pub
 }
 
+/// Represents different ways to assign input devices to game instances
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum InputAssignment {
+    /// Automatically detect and assign the next available device
+    AutoDetect,
+    /// Assign a specific device by its identifier
+    Device(DeviceIdentifier),
+    /// No device assigned to this instance
+    None,
+}
 impl From<&Device> for DeviceIdentifier {
     fn from(device: &Device) -> Self {
         let input_id = device.input_id();
@@ -263,7 +275,43 @@ impl InputMux {
     /// Captures events from mapped physical devices and injects them into the
     /// corresponding virtual devices for each instance.
     /// This function spawns a thread for each mapped physical device.
-    pub fn capture_events(&mut self) -> Result<(), InputMuxError> {
+    pub fn capture_events(&mut self, assignments: &[(usize, InputAssignment)]) -> Result<(), InputMuxError> {
+        // Clear existing mappings
+        self.instance_map.clear();
+        
+        // Process input assignments
+        let mut auto_detect_queue: Vec<DeviceIdentifier> = self.devices.keys().cloned().collect();
+        let mut used_devices: std::collections::HashSet<DeviceIdentifier> = std::collections::HashSet::new();
+        
+        for &(instance_index, ref assignment) in assignments {
+            match assignment {
+                InputAssignment::Device(device_id) => {
+                    if self.devices.contains_key(device_id) && !used_devices.contains(device_id) {
+                        self.instance_map.insert(device_id.clone(), instance_index);
+                        used_devices.insert(device_id.clone());
+                        info!("Assigned device '{}' to instance {}", device_id.name, instance_index);
+                    } else {
+                        warn!("Device '{}' not available for instance {}", device_id.name, instance_index);
+                    }
+                }
+                InputAssignment::AutoDetect => {
+                    if let Some(device_id) = auto_detect_queue.iter()
+                        .find(|id| !used_devices.contains(id))
+                        .cloned() 
+                    {
+                        self.instance_map.insert(device_id.clone(), instance_index);
+                        used_devices.insert(device_id.clone());
+                        info!("Auto-assigned device '{}' to instance {}", device_id.name, instance_index);
+                    } else {
+                        warn!("No available device for auto-detection for instance {}", instance_index);
+                    }
+                }
+                InputAssignment::None => {
+                    info!("No input device assigned to instance {}", instance_index);
+                }
+            }
+        }
+        
         if self.running.load(Ordering::SeqCst) {
             warn!("Input capture is already running.");
             return Err(InputMuxError::AlreadyRunning);
@@ -340,7 +388,7 @@ impl InputMux {
                             }
                             Ok(None) => {
                                 // Timeout occurred, continue the loop to check running_flag
-                                trace!("Read timeout for device '{}', checking stop flag.", identifier.name);
+                                debug!("Read timeout for device '{}', checking stop flag.", identifier.name);
                             }
                             Err(e) => {
                                 // Handle errors reading from the device
@@ -434,8 +482,31 @@ impl InputMux {
 
     /// Gets the system name (/dev/input/eventX) for the virtual device of a given instance.
     pub fn get_virtual_device_sysname(&self, instance_index: usize) -> Option<String> {
-        self.virtual_devices.get(&instance_index).and_then(|dev| dev.syspath().and_then(|p| p.file_name()).and_then(|n| n.to_str()).map(|s| s.to_string()))
+        self.virtual_devices.get(&instance_index)
+            .and_then(|dev| dev.syspath())
+            .and_then(|p| p.file_name())
+            .and_then(|n| n.to_str())
+            .map(|s| s.to_string())
     }
+    
+    /// Get statistics about the input multiplexer
+    pub fn get_stats(&self) -> InputMuxStats {
+        InputMuxStats {
+            total_devices: self.devices.len(),
+            mapped_devices: self.instance_map.len(),
+            virtual_devices: self.virtual_devices.len(),
+            is_running: self.running.load(Ordering::SeqCst),
+        }
+    }
+}
+
+/// Statistics about the input multiplexer
+#[derive(Debug, Clone)]
+pub struct InputMuxStats {
+    pub total_devices: usize,
+    pub mapped_devices: usize,
+    pub virtual_devices: usize,
+    pub is_running: bool,
 }
 
 // Implement Drop to stop capture threads when InputMux goes out of scope

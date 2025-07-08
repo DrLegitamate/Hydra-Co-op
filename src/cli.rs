@@ -4,17 +4,20 @@ use log::debug; // Use debug for cli parsing details
 
 /// Builds the Clap Command structure for the application.
 pub fn build_cli() -> Command {
-    Command::new("Hydra Co-op")
-        .version("1.0") // Consider getting the version from Cargo.toml using env!("CARGO_PKG_VERSION")
-        .author(env!("CARGO_PKG_AUTHORS")) // Get authors from Cargo.toml
-        .about(env!("CARGO_PKG_DESCRIPTION")) // Get description from Cargo.toml
+    Command::new(crate::APP_NAME)
+        .version(crate::APP_VERSION)
+        .author(crate::APP_AUTHORS)
+        .about(crate::APP_DESCRIPTION)
+        .long_about("A comprehensive tool for setting up local split-screen co-operative gameplay on Linux. \
+                    Manages multiple game instances, routes input from physical devices to virtual devices, \
+                    emulates UDP network traffic between instances, and arranges game windows automatically.")
         .arg(
             Arg::new("game_executable")
                 .short('g')
                 .long("game-executable")
                 .value_name("PATH")
                 .help("Specifies the path to the game executable") // Use .help() instead of .about() for arguments
-                .required(true),
+                .required(false), // Made optional since GUI mode doesn't require it
         )
         .arg(
             Arg::new("instances")
@@ -22,9 +25,9 @@ pub fn build_cli() -> Command {
                 .long("instances")
                 .value_name("NUM")
                 .help("Defines the number of game instances (players) to launch")
-                .required(true)
+                .required(false) // Made optional since GUI mode doesn't require it
                 // Add validation to ensure the value is a positive integer
-                .value_parser(clap::value_parser!(u32).range(1..)),
+                .value_parser(clap::value_parser!(u32).range(1..=crate::defaults::MAX_INSTANCES as u32)),
         )
         .arg(
             Arg::new("input_devices")
@@ -32,7 +35,7 @@ pub fn build_cli() -> Command {
                 .long("input-devices")
                 .value_name("DEVICES")
                 .help("Assigns input devices to each instance (e.g., by providing device names or identifiers). Provide multiple times for multiple devices.") // Clarify how to provide multiple values
-                .required(true) // Requires at least one device
+                .required(false) // Made optional since GUI mode doesn't require it
                 .action(clap::ArgAction::Append), // Use Append to collect multiple values into a Vec
         )
         .arg(
@@ -41,8 +44,29 @@ pub fn build_cli() -> Command {
                 .long("layout")
                 .value_name("LAYOUT")
                 .help("Chooses the desired split-screen layout")
-                .required(true)
+                .required(false) // Made optional since GUI mode doesn't require it
                 .value_parser(["horizontal", "vertical", "custom"]), // Simpler way to define possible values
+        )
+        .arg(
+            Arg::new("proton")
+                .short('p')
+                .long("proton")
+                .help("Use Proton to launch Windows games")
+                .action(clap::ArgAction::SetTrue),
+        )
+        .arg(
+            Arg::new("gui")
+                .long("gui")
+                .help("Launch the graphical user interface")
+                .action(clap::ArgAction::SetTrue),
+        )
+        .arg(
+            Arg::new("config")
+                .short('c')
+                .long("config")
+                .value_name("PATH")
+                .help("Path to configuration file")
+                .env("CONFIG_PATH"),
         )
         .arg(
             Arg::new("debug")
@@ -50,6 +74,13 @@ pub fn build_cli() -> Command {
                 .long("debug")
                 .help("Enables debug mode for verbose logging")
                 .action(clap::ArgAction::SetTrue), // Use SetTrue for boolean flags
+        )
+        .arg(
+            Arg::new("verbose")
+                .short('v')
+                .long("verbose")
+                .help("Enable verbose output")
+                .action(clap::ArgAction::Count),
         )
 }
 

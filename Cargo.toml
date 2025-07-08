@@ -1,11 +1,15 @@
 [package]
 name = "hydra-coop-launcher"
 version = "0.1.0"
-edition = "Genesis"
+edition = "2021"
+description = "A tool for Linux to simplify setting up local split-screen co-operative gameplay"
+authors = ["DrLegitamate"]
+license = "MIT"
+repository = "https://github.com/DrLegitamate/Hydra-Co-op"
 
 [dependencies]
 # GTK 4 bindings for the GUI
-gtk = "0.9.2" # This version corresponds to gtk4-rs 0.9.x, targeting GTK 4.8.x
+gtk = { version = "0.9", package = "gtk4" }
 
 # Command-line argument parsing
 clap = { version = "4.5", features = ["derive"] } # Updated to a recent 4.x version
@@ -36,6 +40,11 @@ ctrlc = "3.4.4" # Added missing dependency
 # JSON serialization/deserialization (for DeviceIdentifier in GUI)
 serde_json = "1.0.114" # Added missing dependency
 
+# Additional dependencies for improved functionality
+thiserror = "1.0"
+anyhow = "1.0"
+tokio = { version = "1.0", features = ["full"] }
+dirs = "5.0"
 # Temporary files (used in config module tests)
 # Marked as optional dependency only for tests
 [dev-dependencies]

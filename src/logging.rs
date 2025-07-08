@@ -3,6 +3,7 @@ use std::env;
 use std::fs::File;
 use std::io::Write; // Import Write for file logging
 use std::path::Path;
+use std::time::{SystemTime, UNIX_EPOCH, Duration}; // Import time types
 
 /// Initializes the logging system using env_logger.
 /// Configures logging to stdout and optionally to a file based on environment variables.
@@ -103,6 +104,43 @@ pub fn init() -> Result<(), SetLoggerError> {
     builder.try_init()
 }
 
+/// Initialize logging with better defaults and error handling
+pub fn init_with_level(level: log::LevelFilter) -> Result<(), SetLoggerError> {
+    let mut builder = env_logger::Builder::new();
+    
+    builder.filter_level(level);
+    builder.target(env_logger::Target::Stdout);
+    
+    // Enhanced formatting with colors and better structure
+    builder.format(|buf, record| {
+        use std::io::Write;
+        
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_else(|_| Duration::from_secs(0));
+            
+        let level_style = match record.level() {
+            log::Level::Error => "\x1b[31m", // Red
+            log::Level::Warn => "\x1b[33m",  // Yellow
+            log::Level::Info => "\x1b[32m",  // Green
+            log::Level::Debug => "\x1b[36m", // Cyan
+            log::Level::Trace => "\x1b[35m", // Magenta
+        };
+        
+        writeln!(
+            buf,
+            "[{:05}.{:06}] {}{:5}\x1b[0m [{}] {}",
+            now.as_secs(),
+            now.subsec_micros(),
+            level_style,
+            record.level(),
+            record.module_path().unwrap_or("unknown"),
+            record.args()
+        )
+    });
+    
+    builder.try_init()
+}
 // The custom logging functions are no longer needed.
 // Use the standard log macros (info!, warn!, error!, debug!) directly.
 

@@ -18,6 +18,9 @@ Run multiple game instances, manage inputs, and create a virtual network—all i
 - 📝 **Customizable Settings**: Configure via config.toml file or command-line arguments
 - 🖱️ **Graphical User Interface**: Easy-to-use visual interface for configuration
 - 📋 **Command-Line Interface**: Scriptable interface for launching with specified parameters
+- 🔧 **Robust Error Handling**: Comprehensive error reporting and validation
+- 📊 **Statistics and Monitoring**: Real-time status information about running services
+- 🎯 **Smart Device Assignment**: Automatic and manual input device assignment options
 
 ## 📋 Requirements
 
@@ -73,6 +76,10 @@ Run multiple game instances, manage inputs, and create a virtual network—all i
    sudo modprobe uinput
    ```
 
+7. **Create Configuration Directory** (optional):
+   ```bash
+   mkdir -p ~/.config/hydra-coop
+   ```
 ## 🚀 Usage
 
 ### Graphical User Interface (GUI)
@@ -92,6 +99,8 @@ The GUI provides:
 - Proton toggle for Windows games
 - Input device assignment for each player
 - Save and Launch buttons
+- Real-time status information
+- Configuration validation
 
 ### Command-Line Interface (CLI)
 
@@ -105,17 +114,20 @@ The GUI provides:
     --layout <LAYOUT> \
     [--proton] \
     [--debug]
+    [--config <CONFIG_FILE>] \
+    [--verbose]
 ```
 
 **Arguments**:
 - `--game-executable <FILE>`: Path to the game executable
-- `--instances <NUMBER>`: Number of game instances to launch
 - `--input-devices <DEVICE_NAME>`: Physical input device name for each player
   - Find names using `ls /dev/input/by-id/` or `evtest /dev/input/eventX`
   - Use `"Auto-detect"` to automatically assign the next available device
 - `--layout <LAYOUT>`: Window layout style (`horizontal`, `vertical`, or `custom`)
 - `--proton`: Use Proton to launch Windows games
+- `--config <PATH>`: Path to configuration file
 - `--debug`: Enable debug logging
+- `--verbose`: Enable verbose output (can be used multiple times)
 
 **Example** (2 Players, Horizontal Split):
 ```bash
@@ -130,10 +142,12 @@ The GUI provides:
 
 ## ⚙️ Configuration File (config.toml)
 
-The launcher loads settings from `config.toml` at startup. By default, it looks for this file in the current working directory.
+The launcher loads settings from `config.toml` at startup. By default, it looks for this file in `~/.config/hydra-coop/config.toml`.
 
 You can specify a different configuration file:
 ```bash
+./target/release/hydra-coop-launcher --config "/home/user/.config/hydra/game_profile.toml"
+# Or using environment variable:
 CONFIG_PATH="/home/user/.config/hydra/game_profile.toml" ./target/release/hydra-coop-launcher
 ```
 
@@ -167,6 +181,13 @@ use_proton = false
 
 Settings provided via command-line arguments override settings from the configuration file.
 
+### Configuration Validation
+
+The application automatically validates configuration settings:
+- Ensures game executable paths exist and are executable
+- Validates instance count is between 1 and 8
+- Checks network ports are valid (>= 1024)
+- Provides helpful error messages for invalid configurations
 ## 🖼️ Window Layouts
 
 The window manager automatically arranges game windows:
@@ -174,6 +195,7 @@ The window manager automatically arranges game windows:
 ### Horizontal Split
 Splits the screen horizontally, stacking windows side-by-side:
 ```
+-------+-------+
 +-------+-------+
 |       |       |
 | Inst0 | Inst1 |
@@ -229,6 +251,13 @@ To map specific physical input devices to game instances, find their names or id
 
 Use these names with the `--input-devices` CLI argument or select them from the dropdown menus in the GUI.
 
+### Input Assignment Options
+
+- **Auto-detect**: Automatically assigns the next available input device
+- **Specific Device**: Manually assign a specific input device by name/identifier
+- **None**: No input device assigned to this instance
+
+The application provides real-time feedback about device availability and assignment status.
 ## 🔧 Troubleshooting
 
 ### Common Issues
@@ -257,20 +286,39 @@ Use these names with the `--input-devices` CLI argument or select them from the 
   - Verify network_ports in config.toml match the game's UDP ports
   - Check firewall settings if applicable
 
+- **Configuration Errors**:
+  - Use `--debug` flag for detailed error information
+  - Check configuration file syntax with a TOML validator
+  - Ensure all paths in configuration exist and are accessible
 ### Enable Debug Logging
 
 ```bash
 RUST_LOG=debug ./target/release/hydra-coop-launcher [options...]
 # Or use the --debug flag:
 ./target/release/hydra-coop-launcher --debug [options...]
+# For even more verbose output:
+./target/release/hydra-coop-launcher --verbose --verbose [options...]
 ```
 
 You can specify a log file: `LOG_PATH="/path/to/your/log.txt"`
 
+### Getting Help
+
+- Use `./target/release/hydra-coop-launcher --help` for command-line usage
+- Check the application logs for detailed error information
+- Ensure all system requirements are met
+- Verify file permissions and group memberships
 ## 🤝 Contributing
 
 We welcome contributions! If you find bugs, have feature requests, or want to contribute code, please submit issues or pull requests on GitHub.
 
+### Development Setup
+
+1. Install Rust nightly for development features
+2. Run tests: `cargo test`
+3. Check formatting: `cargo fmt --check`
+4. Run clippy: `cargo clippy`
+5. Build documentation: `cargo doc --open`
 ## 📄 License
 
 This project is licensed under the MIT License.
@@ -282,3 +330,17 @@ DrLegitamate
 ## 📞 Support
 
 For questions or issues, please open an issue on the GitHub repository.
+
+## 🔄 Changelog
+
+### Version 0.1.0
+- Initial release
+- Basic multi-instance game launching
+- Input device routing
+- Window management
+- Network emulation
+- Proton support
+- GUI and CLI interfaces
+- Configuration system
+- Comprehensive error handling
+- Input validation and device management improvements
