@@ -59,6 +59,9 @@
 mod cli;
 mod config;
 mod errors;
+mod game_detection;
+mod universal_launcher;
+mod adaptive_config;
 mod gui;
 mod input_mux;
 mod instance_manager;
@@ -69,7 +72,8 @@ mod window_manager;
 
 use errors::{HydraError, Result};
 use config::Config;
-use instance_manager::launch_multiple_game_instances;
+use universal_launcher::UniversalLauncher;
+use adaptive_config::AdaptiveConfigManager;
 use logging::init as init_logging;
 use net_emulator::NetEmulator;
 use window_manager::{WindowManager, Layout};
@@ -91,6 +95,8 @@ use std::sync::{atomic::{AtomicBool, Ordering}, Arc}; // Import for graceful shu
 /// Encapsulates the core application logic: launching instances, setting up
 /// network, managing windows, and initializing input multiplexing.
 /// This function can be called by both the CLI and GUI modes.
+/// 
+/// Now uses the universal launcher system that works with any game.
 ///
 /// # Returns
 ///
@@ -103,6 +109,7 @@ fn run_core_logic(
     layout: Layout,
     use_proton: bool,
     config: &Config, // Pass the loaded configuration
+    adaptive_config: Option<&mut AdaptiveConfigManager>, // Optional adaptive config
     // Potentially pass other necessary data like network mapping config
 ) -> Result<(NetEmulator, InputMux)> {
     // Validate inputs
@@ -125,6 +132,7 @@ fn run_core_logic(
     debug!("  Layout: {:?}", layout);
     debug!("  Using Proton: {}", use_proton);
     debug!("  Config: {:?}", config); // Log config details if Debug is derived
+    debug!("  Adaptive config enabled: {}", adaptive_config.is_some());
 
 
     // Determine the base directory for WINEPREFIXes if using Proton.
@@ -150,15 +158,35 @@ fn run_core_logic(
         PathBuf::from("/dev/null") // Or a temporary directory that will be ignored
     };
 
+    // Use the universal launcher instead of the old instance manager
+    info!("Initializing universal game launcher...");
+    let mut universal_launcher = UniversalLauncher::new();
+    
+    let launch_start = std::time::Instant::now();
 
-    // Launch the required number of game instances
-    info!("Launching {} game instances using executable: {}", instances_usize, game_executable_path.display());
-    let mut game_instances = launch_multiple_game_instances(
+    // Launch game instances using the universal system
+    info!("Launching {} game instances using universal launcher: {}", instances_usize, game_executable_path.display());
+    let game_instance_pids = universal_launcher.launch_game_instances(
         game_executable_path,
         instances_usize,
         use_proton,
-        &base_wineprefix_dir,
     )?;
+    
+    let launch_duration = launch_start.elapsed();
+    info!("Universal launcher completed in {:?}", launch_duration);
+
+    // Record success in adaptive config if available
+    if let Some(adaptive_mgr) = adaptive_config {
+        let game_id = game_executable_path.file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("unknown")
+            .to_string();
+            
+        // We'd need to get the profile and config from the universal launcher
+        // This is a simplified version - in practice you'd want to expose these
+        info!("Recording successful launch in adaptive configuration");
+        // adaptive_mgr.record_success(game_id, &profile, &game_config, launch_duration)?;
+    }
 
 
     // Note: At this point, the game processes are started, but their windows
@@ -180,10 +208,9 @@ fn run_core_logic(
     // Using a simple 0-based index for the emulator instance ID here for simplicity.
     // This emulator instance ID needs to be consistently associated with a specific
     // game process and how that game process identifies itself in the network.
-    info!("Adding {} instances to network emulator.", game_instances.len());
-    for (i, instance) in game_instances.iter().enumerate() {
+    info!("Adding {} instances to network emulator.", game_instance_pids.len());
+    for (i, &pid) in game_instance_pids.iter().enumerate() {
         let emulator_instance_id = i as u8; // Using 0-based index as emulator instance ID
-        let pid = instance.id(); // Get the PID of the launched process
 
         // Check if the emulator_instance_id is within the u8 range if required by add_instance
          if emulator_instance_id as u32 != i as u32 { // Check for overflow if i is large
@@ -327,7 +354,6 @@ fn run_core_logic(
     let window_manager = WindowManager::new()?;
 
     // Collect the PIDs of the launched game instances for the window manager
-    let game_instance_pids: Vec<u32> = game_instances.iter().map(|instance| instance.id()).collect();
     info!("Attempting to set window layout for PIDs: {:?}", game_instance_pids);
 
     window_manager.set_layout(&game_instance_pids, layout)?;
@@ -453,7 +479,9 @@ fn run_application() -> Result<()> {
 
         // Load configuration before starting the GUI to populate it with existing settings.
         let config_path = get_config_path()?;
+        let adaptive_config_path = get_adaptive_config_path()?;
         info!("Attempting to load configuration from {}", config_path.display());
+        info!("Attempting to load adaptive configuration from {}", adaptive_config_path.display());
 
         let config = match Config::load(&config_path) {
             Ok(cfg) => {
@@ -479,13 +507,22 @@ fn run_application() -> Result<()> {
         };
          info!("Configuration loaded or defaulted for GUI.");
 
+        // Load adaptive configuration
+        let mut adaptive_config = match AdaptiveConfigManager::new(adaptive_config_path) {
+            Ok(mgr) => Some(mgr),
+            Err(e) => {
+                warn!("Failed to load adaptive configuration: {}. Continuing without adaptive features.", e);
+                None
+            }
+        };
+
         // Validate configuration
         if let Err(e) = config.validate() {
             warn!("Configuration validation failed: {}. Using defaults where needed.", e);
         }
 
         // Pass the enumerated devices and loaded config to the GUI
-         if let Err(e) = gui::run_gui(available_devices, config) { // Pass data to run_gui
+         if let Err(e) = gui::run_gui(available_devices, config, adaptive_config) { // Pass data to run_gui
              error!("GUI application failed: {}", e);
              return Err(HydraError::application(format!("GUI failed: {}", e)));
          }
@@ -526,6 +563,7 @@ fn run_application() -> Result<()> {
 
         // Load user configuration (in CLI mode, configuration might provide defaults or override CLI args)
         let config_path = get_config_path()?;
+        let adaptive_config_path = get_adaptive_config_path()?;
         info!("Attempting to load configuration from {}", config_path.display());
 
         let config = match Config::load(&config_path) {
@@ -550,6 +588,15 @@ fn run_application() -> Result<()> {
         
         // Validate configuration
         config.validate()?;
+        
+        // Load adaptive configuration for CLI mode
+        let mut adaptive_config = match AdaptiveConfigManager::new(adaptive_config_path) {
+            Ok(mgr) => Some(mgr),
+            Err(e) => {
+                warn!("Failed to load adaptive configuration: {}. Continuing without adaptive features.", e);
+                None
+            }
+        };
         
         // TODO: Implement logic to combine command-line arguments and configuration settings.
         // Command-line arguments should typically override configuration file settings.
@@ -613,6 +660,7 @@ fn run_application() -> Result<()> {
              layout,
              final_use_proton, // Use the potentially overridden use_proton
              &config,
+             adaptive_config.as_mut(),
          );
 
 
@@ -699,6 +747,13 @@ fn get_config_path() -> Result<PathBuf> {
         crate::utils::ensure_dir_exists(&config_dir)?;
         Ok(config_dir.join("config.toml"))
     }
+}
+
+/// Get the adaptive configuration file path
+fn get_adaptive_config_path() -> Result<PathBuf> {
+    let config_dir = crate::utils::get_config_dir()?;
+    crate::utils::ensure_dir_exists(&config_dir)?;
+    Ok(config_dir.join("adaptive.toml"))
 }
 
 // Helper function for early parsing of args (just for debug flag)

@@ -7,6 +7,9 @@
 pub mod cli;
 pub mod config;
 pub mod errors;
+pub mod game_detection;
+pub mod universal_launcher;
+pub mod adaptive_config;
 pub mod gui;
 pub mod input_mux;
 pub mod instance_manager;
@@ -20,6 +23,9 @@ pub use errors::{HydraError, Result};
 pub use config::Config;
 pub use window_manager::Layout;
 pub use input_mux::{DeviceIdentifier, InputAssignment, InputMux};
+pub use game_detection::{GameDetector, GameProfile, GameConfiguration};
+pub use universal_launcher::{UniversalLauncher, GameInstance};
+pub use adaptive_config::{AdaptiveConfigManager, RecommendedConfig};
 
 /// Application metadata
 pub const APP_NAME: &str = "Hydra Co-op Launcher";

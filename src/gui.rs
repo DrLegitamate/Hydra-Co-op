@@ -13,6 +13,7 @@ use std::thread::{self, JoinHandle}; // Import JoinHandle
 use std::error::Error; // Import Error trait for boxed errors
 use std::sync::{Arc, Mutex}; // Import Arc and Mutex for shared mutable state across threads
 use serde_json; // Import serde_json for serializing/deserializing DeviceIdentifier
+use crate::adaptive_config::AdaptiveConfigManager; // Import adaptive config
 
 
 // Define a struct to hold GUI state and data accessible by signal handlers
@@ -38,6 +39,9 @@ struct GuiState {
     // Store the JoinHandle of the core logic thread
     core_logic_thread: Arc<Mutex<Option<JoinHandle<Result<(NetEmulator, InputMux), Box<dyn Error>>>>>>,
 
+    // Store adaptive configuration manager
+    adaptive_config: Arc<Mutex<Option<AdaptiveConfigManager>>>,
+
 }
 
 
@@ -51,7 +55,11 @@ struct GuiState {
 /// # Returns
 ///
 /// * `Result<(), Box<dyn std::error::Error>>` - Returns Ok on successful application run.
-pub fn run_gui(available_devices: Vec<DeviceIdentifier>, initial_config: Config) -> Result<(), Box<dyn std::error::Error>> {
+pub fn run_gui(
+    available_devices: Vec<DeviceIdentifier>, 
+    initial_config: Config,
+    adaptive_config: Option<AdaptiveConfigManager>
+) -> Result<(), Box<dyn std::error::Error>> {
 
     let application = Application::new(
         Some("com.example.split-screen-launcher.gui"), // Updated application ID
@@ -67,6 +75,7 @@ pub fn run_gui(available_devices: Vec<DeviceIdentifier>, initial_config: Config)
     let core_logic_thread_handle = Arc::new(Mutex::new(None));
      gui_state.borrow_mut().background_services = Arc::clone(&background_services_state);
      gui_state.borrow_mut().core_logic_thread = Arc::clone(&core_logic_thread_handle);
+     gui_state.borrow_mut().adaptive_config = Arc::new(Mutex::new(adaptive_config));
 
 
     application.connect_activate(move |app| {
@@ -491,6 +500,7 @@ pub fn run_gui(available_devices: Vec<DeviceIdentifier>, initial_config: Config)
                     layout,
                     use_proton,
                     &initial_config_clone_for_thread,
+                    None, // GUI doesn't currently pass adaptive config to core logic
                  );
 
                  // Store the returned background services instances if successful

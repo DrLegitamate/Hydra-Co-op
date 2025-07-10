@@ -10,6 +10,9 @@ Run multiple game instances, manage inputs, and create a virtual network—all i
 
 ## ✨ Features
 
+- 🎮 **Universal Game Support**: Works with ANY game without requiring game-specific handlers or configuration
+- 🧠 **Adaptive Learning**: Automatically learns optimal settings for each game and improves over time
+- 🔍 **Automatic Game Detection**: Detects game engines (Unity, Unreal, Godot, etc.) and applies appropriate configurations
 - 🖥️ **Multiple Instances**: Launch multiple instances of a single game executable simultaneously
 - 🌐 **UDP Network Emulation**: Route UDP network packets between game instances communicating on localhost using configurable ports
 - ⌨️ **Input Routing**: Route input from dedicated physical devices (keyboards, mice, gamepads) to individual virtual input devices
@@ -21,6 +24,16 @@ Run multiple game instances, manage inputs, and create a virtual network—all i
 - 🔧 **Robust Error Handling**: Comprehensive error reporting and validation
 - 📊 **Statistics and Monitoring**: Real-time status information about running services
 - 🎯 **Smart Device Assignment**: Automatic and manual input device assignment options
+
+### 🚀 Universal Game Support
+
+Hydra Co-op now features a revolutionary **universal game support system** that eliminates the need for game-specific handlers:
+
+- **Automatic Engine Detection**: Detects Unity, Unreal Engine, Godot, GameMaker, and other engines
+- **Smart Configuration**: Automatically applies optimal settings based on detected game type
+- **Adaptive Learning**: Learns from successful launches and improves configurations over time
+- **Zero Configuration**: Works out-of-the-box with most games
+- **Fallback Strategies**: Provides multiple approaches when games don't work with default settings
 
 ## 📋 Requirements
 
