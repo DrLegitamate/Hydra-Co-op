@@ -342,6 +342,31 @@ impl WindowManager {
                      let y_offset = index_on_monitor as i32 * single_window_height;
                      (monitor.x, monitor.y + y_offset, monitor.width, single_window_height)
                  }
+                 Layout::Grid2x2 => {
+                     let grid_x = window_index % 2;
+                     let grid_y = window_index / 2;
+                     let cell_width = monitor.width / 2;
+                     let cell_height = monitor.height / 2;
+                     let x = monitor.x + (grid_x as i32 * cell_width);
+                     let y = monitor.y + (grid_y as i32 * cell_height);
+                     (x, y, cell_width, cell_height)
+                 }
+                 Layout::Grid3x1 => {
+                     let cell_width = monitor.width / 3;
+                     let x = monitor.x + (window_index as i32 * cell_width);
+                     (x, monitor.y, cell_width, monitor.height)
+                 }
+                 Layout::Custom(rects) => {
+                     if let Some(rect) = rects.get(window_index) {
+                         let target_monitor = monitors.get(rect.monitor_index).unwrap_or(monitor);
+                         (target_monitor.x + rect.x, target_monitor.y + rect.y, rect.width, rect.height)
+                     } else {
+                         // Fallback to horizontal if custom rect not available
+                         let single_window_width = monitor.width / num_windows as i32;
+                         let x_offset = window_index as i32 * single_window_width;
+                         (monitor.x + x_offset, monitor.y, single_window_width, monitor.height)
+                     }
+                 }
              };
 
              info!("Applying layout for window {} (PID {}): monitor index {}, x={}, y={}, width={}, height={}", window_id, pid, monitor_index, x, y, width, height);
@@ -397,6 +422,18 @@ impl WindowManager {
 pub enum Layout {
     Horizontal,
     Vertical,
+    Grid2x2,
+    Grid3x1,
+    Custom(Vec<WindowRect>),
+}
+
+#[derive(Debug, Clone)]
+pub struct WindowRect {
+    pub x: i32,
+    pub y: i32,
+    pub width: u32,
+    pub height: u32,
+    pub monitor_index: usize,
     // Consider adding more layouts like Grid
 }
 
@@ -405,6 +442,8 @@ impl From<&str> for Layout {
         match s.to_lowercase().as_str() {
             "vertical" => Layout::Vertical,
             "horizontal" => Layout::Horizontal,
+            "grid2x2" => Layout::Grid2x2,
+            "grid3x1" => Layout::Grid3x1,
             _ => {
                 log::warn!("Unknown layout '{}', defaulting to Horizontal.", s);
                 Layout::Horizontal // Default layout
