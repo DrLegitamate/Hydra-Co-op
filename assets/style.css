@@ -1,0 +1,367 @@
+/* Modern Hydra Co-op Launcher Styles */
+
+/* Main window styling */
+.main-window {
+    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+}
+
+.main-container {
+    background: rgba(255, 255, 255, 0.95);
+    border-radius: 12px;
+    margin: 8px;
+    box-shadow: 0 8px 32px rgba(0, 0, 0, 0.1);
+}
+
+/* Header bar */
+.header-bar {
+    background: linear-gradient(90deg, #4facfe 0%, #00f2fe 100%);
+    color: white;
+    border-radius: 12px 12px 0 0;
+}
+
+.title-label {
+    font-size: 18px;
+    font-weight: bold;
+    color: white;
+}
+
+/* View switcher */
+.view-switcher {
+    margin: 16px;
+    background: rgba(71, 85, 105, 0.1);
+    border-radius: 8px;
+    padding: 4px;
+}
+
+.view-switcher button {
+    border-radius: 6px;
+    padding: 8px 16px;
+    margin: 2px;
+    transition: all 0.2s ease;
+}
+
+.view-switcher button:checked {
+    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+    color: white;
+    box-shadow: 0 2px 8px rgba(102, 126, 234, 0.3);
+}
+
+/* Section frames */
+.section-frame {
+    background: white;
+    border: 1px solid rgba(71, 85, 105, 0.1);
+    border-radius: 12px;
+    margin: 8px 0;
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.05);
+    transition: all 0.2s ease;
+}
+
+.section-frame:hover {
+    box-shadow: 0 4px 16px rgba(0, 0, 0, 0.1);
+    transform: translateY(-1px);
+}
+
+.section-title {
+    font-size: 16px;
+    font-weight: bold;
+    color: #1e293b;
+}
+
+.section-subtitle {
+    font-size: 13px;
+    color: #64748b;
+    opacity: 0.8;
+}
+
+/* Setup grid */
+.setup-grid {
+    background: transparent;
+}
+
+/* Labels and inputs */
+.setting-label {
+    font-weight: 600;
+    color: #374151;
+    min-width: 140px;
+}
+
+.player-label {
+    font-weight: 500;
+    color: #4b5563;
+    font-size: 14px;
+}
+
+.file-path-label {
+    font-family: monospace;
+    background: rgba(71, 85, 105, 0.05);
+    padding: 8px 12px;
+    border-radius: 6px;
+    color: #1e293b;
+    border: 1px solid rgba(71, 85, 105, 0.1);
+}
+
+/* Buttons */
+button.suggested-action {
+    background: linear-gradient(135deg, #10b981 0%, #059669 100%);
+    color: white;
+    border: none;
+    border-radius: 8px;
+    padding: 12px 24px;
+    font-weight: 600;
+    box-shadow: 0 2px 8px rgba(16, 185, 129, 0.3);
+    transition: all 0.2s ease;
+}
+
+button.suggested-action:hover {
+    background: linear-gradient(135deg, #059669 0%, #047857 100%);
+    box-shadow: 0 4px 16px rgba(16, 185, 129, 0.4);
+    transform: translateY(-1px);
+}
+
+button.suggested-action:active {
+    transform: translateY(0);
+    box-shadow: 0 2px 8px rgba(16, 185, 129, 0.3);
+}
+
+button.flat {
+    background: transparent;
+    border: 1px solid rgba(71, 85, 105, 0.2);
+    border-radius: 6px;
+    padding: 8px 16px;
+    color: #374151;
+    transition: all 0.2s ease;
+}
+
+button.flat:hover {
+    background: rgba(71, 85, 105, 0.05);
+    border-color: rgba(71, 85, 105, 0.3);
+}
+
+/* Form controls */
+entry {
+    border: 1px solid rgba(71, 85, 105, 0.2);
+    border-radius: 6px;
+    padding: 10px 12px;
+    background: white;
+    transition: all 0.2s ease;
+}
+
+entry:focus {
+    border-color: #667eea;
+    box-shadow: 0 0 0 3px rgba(102, 126, 234, 0.1);
+    outline: none;
+}
+
+combobox {
+    border-radius: 6px;
+}
+
+combobox button {
+    border: 1px solid rgba(71, 85, 105, 0.2);
+    border-radius: 6px;
+    padding: 10px 12px;
+    background: white;
+    transition: all 0.2s ease;
+}
+
+combobox button:hover {
+    border-color: rgba(71, 85, 105, 0.3);
+    background: rgba(71, 85, 105, 0.02);
+}
+
+.input-combo {
+    min-width: 200px;
+}
+
+/* Radio buttons */
+.layout-radio {
+    margin: 0 8px;
+    padding: 12px 16px;
+    border: 1px solid rgba(71, 85, 105, 0.2);
+    border-radius: 8px;
+    background: white;
+    transition: all 0.2s ease;
+}
+
+.layout-radio:checked {
+    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+    color: white;
+    border-color: #667eea;
+    box-shadow: 0 2px 8px rgba(102, 126, 234, 0.3);
+}
+
+.layout-radio:hover {
+    border-color: rgba(71, 85, 105, 0.3);
+    background: rgba(71, 85, 105, 0.02);
+}
+
+/* Checkboxes */
+.option-checkbox {
+    padding: 8px;
+    border-radius: 6px;
+    transition: all 0.2s ease;
+}
+
+.option-checkbox:hover {
+    background: rgba(71, 85, 105, 0.05);
+}
+
+/* Status view */
+.status-label {
+    font-size: 16px;
+    font-weight: 600;
+    color: #1e293b;
+}
+
+.launch-progress {
+    border-radius: 8px;
+    background: rgba(71, 85, 105, 0.1);
+    min-height: 8px;
+}
+
+.launch-progress progress {
+    background: linear-gradient(90deg, #4facfe 0%, #00f2fe 100%);
+    border-radius: 8px;
+}
+
+.log-view {
+    font-family: 'JetBrains Mono', 'Fira Code', 'Consolas', monospace;
+    font-size: 12px;
+    background: #1e293b;
+    color: #e2e8f0;
+    border-radius: 8px;
+    padding: 12px;
+}
+
+.log-view text {
+    background: transparent;
+    color: #e2e8f0;
+}
+
+/* Status bar */
+.status-bar {
+    background: rgba(71, 85, 105, 0.05);
+    border-top: 1px solid rgba(71, 85, 105, 0.1);
+    border-radius: 0 0 12px 12px;
+}
+
+.status-text {
+    font-size: 13px;
+    color: #64748b;
+}
+
+.version-label {
+    font-size: 12px;
+    color: #9ca3af;
+    font-family: monospace;
+}
+
+/* Animations */
+@keyframes fadeIn {
+    from {
+        opacity: 0;
+        transform: translateY(10px);
+    }
+    to {
+        opacity: 1;
+        transform: translateY(0);
+    }
+}
+
+.section-frame {
+    animation: fadeIn 0.3s ease-out;
+}
+
+/* Scrollbars */
+scrollbar {
+    background: rgba(71, 85, 105, 0.05);
+    border-radius: 6px;
+}
+
+scrollbar slider {
+    background: rgba(71, 85, 105, 0.2);
+    border-radius: 6px;
+    transition: all 0.2s ease;
+}
+
+scrollbar slider:hover {
+    background: rgba(71, 85, 105, 0.3);
+}
+
+/* Responsive adjustments */
+@media (max-width: 800px) {
+    .main-container {
+        margin: 4px;
+        border-radius: 8px;
+    }
+    
+    .section-frame {
+        margin: 4px 0;
+        border-radius: 8px;
+    }
+    
+    .setup-grid {
+        margin: 12px;
+    }
+}
+
+/* Dark mode support */
+@media (prefers-color-scheme: dark) {
+    .main-container {
+        background: rgba(30, 41, 59, 0.95);
+    }
+    
+    .section-frame {
+        background: #1e293b;
+        border-color: rgba(148, 163, 184, 0.1);
+    }
+    
+    .section-title {
+        color: #f1f5f9;
+    }
+    
+    .section-subtitle {
+        color: #94a3b8;
+    }
+    
+    .setting-label {
+        color: #e2e8f0;
+    }
+    
+    .player-label {
+        color: #cbd5e1;
+    }
+    
+    .file-path-label {
+        background: rgba(148, 163, 184, 0.1);
+        color: #f1f5f9;
+        border-color: rgba(148, 163, 184, 0.2);
+    }
+    
+    entry {
+        background: #334155;
+        border-color: rgba(148, 163, 184, 0.2);
+        color: #f1f5f9;
+    }
+    
+    combobox button {
+        background: #334155;
+        border-color: rgba(148, 163, 184, 0.2);
+        color: #f1f5f9;
+    }
+    
+    .layout-radio {
+        background: #334155;
+        border-color: rgba(148, 163, 184, 0.2);
+        color: #f1f5f9;
+    }
+    
+    button.flat {
+        color: #e2e8f0;
+        border-color: rgba(148, 163, 184, 0.2);
+    }
+    
+    button.flat:hover {
+        background: rgba(148, 163, 184, 0.1);
+    }
+}
