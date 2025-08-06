@@ -81,7 +81,7 @@ use input_mux::{InputMux, DeviceIdentifier, InputAssignment};
 use std::{env, thread, io}; // Import io
 use log::{info, error, warn, debug}; // Import warn and debug for consistency
 use std::path::{Path, PathBuf}; // Import Path and PathBuf
-use clap::{ArgMatches, Arg, Command}; // Import Command for helper
+use clap::ArgMatches; // Import ArgMatches only
 use std::time::Duration;
 use std::collections::HashMap; // Import HashMap
 use std::process::Child; // Import Child if needed for instance management
@@ -446,9 +446,9 @@ fn run_application() -> Result<()> {
 
 
     // Now parse the full command-line arguments, including the potential GUI flag
-    let matches: ArgMatches = build_cli_with_gui_flag().get_matches();
+    let matches: ArgMatches = cli::build_cli().get_matches();
 
-    let use_gui_flag: bool = *matches.get_one("gui").unwrap_or(&false);
+    let use_gui_flag: bool = matches.get_flag("gui");
 
     // Check if any of the required CLI arguments are provided.
     // We can check for 'game_executable' as a representative required arg.
@@ -770,25 +770,6 @@ fn parse_args_for_logging() -> ArgMatches {
         .get_matches()
 }
 
-// Helper function to build the full CLI Command including the GUI flag
-fn build_cli_with_gui_flag() -> clap::Command {
-    // Get the base CLI definition from cli.rs
-    let mut cli = crate::cli::build_cli();
-    // Add the --gui flag
-    cli = cli.arg(
-        Arg::new("gui")
-            .long("gui")
-            .help("Launches the application with the graphical user interface")
-            .action(clap::ArgAction::SetTrue)
-            // Make the GUI flag conflict with required CLI arguments
-            // If --gui is present, required CLI args are not needed.
-            // This is handled by clap's conflicts_with_all.
-            // The defaulting logic in main() then checks if required args were provided
-            // when --gui is absent.
-             .conflicts_with_all(&["game_executable", "instances", "input_devices", "layout"])
-    );
-    cli
-}
 
 
 // Note: Ensure all modules used here (cli, config, instance_manager, logging,

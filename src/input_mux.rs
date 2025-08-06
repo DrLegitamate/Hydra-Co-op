@@ -427,10 +427,10 @@ impl InputMux {
     }
 
     /// Signals the capture threads to stop and waits for them to finish.
-    pub fn stop_capture(&mut self) {
+    pub fn stop_capture(&mut self) -> Result<(), InputMuxError> {
         if !self.running.load(Ordering::SeqCst) {
             info!("Input capture is not running.");
-            return;
+            return Ok(());
         }
 
         info!("Stopping input event capture...");
@@ -447,6 +447,7 @@ impl InputMux {
         } else {
              warn!("No capture threads found to join.");
         }
+        Ok(())
     }
 
 
