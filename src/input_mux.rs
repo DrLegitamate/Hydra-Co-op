@@ -450,6 +450,10 @@ impl InputMux {
         Ok(())
     }
 
+    /// Get join handle for capture threads (for external thread management)
+    pub fn join_capture(&mut self) -> Option<Vec<JoinHandle<()>>> {
+        self.capture_threads.take()
+    }
 
     /// Maps a physical input device identifier to a specific game instance index.
     /// Use this function to set up which device controls which instance.

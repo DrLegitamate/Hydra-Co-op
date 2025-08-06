@@ -275,6 +275,11 @@ impl NetEmulator {
         Ok(())
     }
 
+    /// Get join handle for relay thread (for external thread management)
+    pub fn join_relay(&mut self) -> Option<thread::JoinHandle<Result<(), NetEmulatorError>>> {
+        self.relay_thread.take()
+    }
+
     /// Sends a stop signal to the relay thread and waits for it to finish.
     pub fn stop_relay(&mut self) -> Result<(), NetEmulatorError> {
         info!("Stopping network packet relay thread.");

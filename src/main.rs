@@ -760,8 +760,8 @@ fn get_adaptive_config_path() -> Result<PathBuf> {
 // Note: This uses Command::new with a placeholder name, which is fine
 // for this limited early parsing purpose.
 fn parse_args_for_logging() -> ArgMatches {
-    Command::new("Hydra Co-op")
-        .arg(Arg::new("debug").long("debug").action(clap::ArgAction::SetTrue))
+    clap::Command::new("Hydra Co-op")
+        .arg(clap::Arg::new("debug").long("debug").action(clap::ArgAction::SetTrue))
         // Add other relevant args needed before full parsing if any
         .disable_help_flag(true) // Don't show help for this temporary parser
         .disable_version_flag(true) // Don't show version for this temporary parser

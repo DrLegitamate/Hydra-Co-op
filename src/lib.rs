@@ -28,7 +28,7 @@ pub use universal_launcher::{UniversalLauncher, GameInstance};
 pub use adaptive_config::{AdaptiveConfigManager, RecommendedConfig};
 
 /// Application metadata
-pub const APP_NAME: &str = "Hydra Co-op Launcher";
+pub const APP_NAME: &str = env!("CARGO_PKG_NAME");
 pub const APP_VERSION: &str = env!("CARGO_PKG_VERSION");
 pub const APP_AUTHORS: &str = env!("CARGO_PKG_AUTHORS");
 pub const APP_DESCRIPTION: &str = env!("CARGO_PKG_DESCRIPTION");
