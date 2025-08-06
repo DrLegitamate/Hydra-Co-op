@@ -318,15 +318,19 @@ impl GameDetector {
     }
 
     /// Analyze executable for additional configuration hints
-    fn analyze_executable(&self, profile: &mut GameProfile, executable_path: &Path) -> Result<()> {
+    fn analyze_executable(&self, profile: &mut GameProfile, executable_path: &Path) -> std::result::Result<(), GameDetectionError> {
         // Check if it's a Windows executable
-        if crate::proton_integration::is_windows_binary(executable_path).unwrap_or(false) {
+        if crate::proton_integration::is_windows_binary(executable_path)
+            .map_err(|e| GameDetectionError::AnalysisFailed(e.to_string()))?
+        {
             profile.environment_vars.insert("WINEDEBUG".to_string(), "-all".to_string());
             profile.working_dir_strategy = WorkingDirStrategy::SeparateDirectories;
         }
 
         // Analyze file size for hints about game complexity
-        if let Ok(metadata) = fs::metadata(executable_path) {
+        let metadata = fs::metadata(executable_path)
+            .map_err(GameDetectionError::Io)?;
+        {
             let size_mb = metadata.len() / (1024 * 1024);
             
             if size_mb > 100 {

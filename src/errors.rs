@@ -28,6 +28,15 @@ pub enum HydraError {
     #[error("Proton integration error: {0}")]
     Proton(#[from] crate::proton_integration::ProtonError),
     
+    #[error("Game detection error: {0}")]
+    GameDetection(#[from] crate::game_detection::GameDetectionError),
+    
+    #[error("Universal launcher error: {0}")]
+    UniversalLauncher(#[from] crate::universal_launcher::UniversalLauncherError),
+    
+    #[error("Adaptive config error: {0}")]
+    AdaptiveConfig(#[from] crate::adaptive_config::AdaptiveConfigError),
+    
     #[error("I/O error: {0}")]
     Io(#[from] io::Error),
     

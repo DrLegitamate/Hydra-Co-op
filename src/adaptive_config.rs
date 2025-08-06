@@ -204,7 +204,7 @@ impl AdaptiveConfigManager {
         game_id: String,
         config: &crate::game_detection::GameConfiguration,
         error: &str,
-    ) -> Result<()> {
+    ) -> std::result::Result<(), AdaptiveConfigError> {
         warn!("Recording failed launch for game: {} - {}", game_id, error);
 
         let mut failed_config = HashMap::new();

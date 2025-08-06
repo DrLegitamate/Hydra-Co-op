@@ -368,7 +368,7 @@ impl UniversalLauncher {
     }
 
     /// Stop all running instances
-    pub fn stop_all_instances(&mut self) -> Result<()> {
+    pub fn stop_all_instances(&mut self) -> std::result::Result<(), UniversalLauncherError> {
         info!("Stopping all {} game instances", self.active_instances.len());
 
         for instance in &mut self.active_instances {

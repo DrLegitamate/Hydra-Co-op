@@ -36,7 +36,7 @@ struct GuiState {
     initial_config: Config,
     use_proton_checkbox: Option<CheckButton>,
     background_services: Arc<Mutex<Option<(crate::net_emulator::NetEmulator, InputMux)>>>,
-    core_logic_thread: Arc<Mutex<Option<JoinHandle<Result<(crate::net_emulator::NetEmulator, InputMux), Box<dyn Error>>>>>>,
+    core_logic_thread: Arc<Mutex<Option<JoinHandle<Result<(crate::net_emulator::NetEmulator, InputMux), Box<dyn StdError + Send + Sync>>>>>>,
     adaptive_config: Arc<Mutex<Option<AdaptiveConfigManager>>>,
     
     // New UI elements
