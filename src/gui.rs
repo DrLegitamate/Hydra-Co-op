@@ -469,7 +469,7 @@ fn create_status_bar(gui_state: &Rc<RefCell<GuiState>>) -> Box {
     status_bar.set_margin_end(12);
     status_bar.add_css_class("status-bar");
     
-    let status_icon = Image::from_icon_name("emblem-ok-symbolic");
+    let status_icon = Image::from_icon_name("object-select-symbolic");
     status_icon.set_pixel_size(16);
     
     let status_text = Label::new(Some("Ready"));

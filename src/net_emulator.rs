@@ -276,7 +276,7 @@ impl NetEmulator {
     }
 
     /// Get join handle for relay thread (for external thread management)
-    pub fn join_relay(&mut self) -> Option<thread::JoinHandle<Result<(), NetEmulatorError>>> {
+    pub fn take_relay_handle(&mut self) -> Option<thread::JoinHandle<Result<(), NetEmulatorError>>> {
         self.relay_thread.take()
     }
 

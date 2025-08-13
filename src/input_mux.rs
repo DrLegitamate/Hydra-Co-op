@@ -451,7 +451,7 @@ impl InputMux {
     }
 
     /// Get join handle for capture threads (for external thread management)
-    pub fn join_capture(&mut self) -> Option<Vec<JoinHandle<()>>> {
+    pub fn take_capture_handles(&mut self) -> Option<Vec<JoinHandle<()>>> {
         self.capture_threads.take()
     }
 

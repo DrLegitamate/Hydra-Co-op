@@ -333,7 +333,7 @@ impl WindowManager {
                      // Corrected index calculation for vertical tiling within a monitor
                       let index_on_monitor = ordered_windows.iter().take(window_index)
                          .filter(|(_, &w)| {
-                             let monitor_idx_for_w = ordered_windows.iter().position(|&(_, inner_w)| inner_w == w).unwrap() % num_monitors;
+                             let monitor_idx_for_w = ordered_windows.iter().position(|(_, &inner_w)| inner_w == w).unwrap_or(0) % num_monitors;
                              monitor_idx_for_w == monitor_index
                          })
                          .count();

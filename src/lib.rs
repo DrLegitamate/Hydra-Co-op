@@ -53,14 +53,14 @@ pub mod utils {
     pub fn get_config_dir() -> Result<PathBuf> {
         dirs::config_dir()
             .map(|dir| dir.join("hydra-coop"))
-            .ok_or_else(|| crate::HydraError::application("Could not determine config directory"))
+            .ok_or_else(|| HydraError::application("Could not determine config directory"))
     }
     
     /// Get the default data directory
     pub fn get_data_dir() -> Result<PathBuf> {
         dirs::data_dir()
             .map(|dir| dir.join("hydra-coop"))
-            .ok_or_else(|| crate::HydraError::application("Could not determine data directory"))
+            .ok_or_else(|| HydraError::application("Could not determine data directory"))
     }
     
     /// Ensure a directory exists, creating it if necessary
