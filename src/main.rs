@@ -90,7 +90,8 @@ use std::net::SocketAddr; // Import SocketAddr
 use ctrlc; // Import ctrlc for graceful shutdown
 use std::sync::{atomic::{AtomicBool, Ordering}, Arc}; // Import for graceful shutdown flag
 
-
+// Import the StdError type alias for consistency
+use std::error::Error as StdError;
 
 /// Encapsulates the core application logic: launching instances, setting up
 /// network, managing windows, and initializing input multiplexing.

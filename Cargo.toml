@@ -10,6 +10,8 @@ repository = "https://github.com/DrLegitamate/Hydra-Co-op"
 [dependencies]
 # GTK 4 bindings for the GUI
 gtk = { version = "0.9", package = "gtk4" }
+glib = "0.20"
+gdk = "0.9"
 
 # Command-line argument parsing
 clap = { version = "4.5", features = ["derive"] } # Updated to a recent 4.x version
@@ -45,6 +47,8 @@ thiserror = "1.0"
 anyhow = "1.0"
 tokio = { version = "1.0", features = ["full"] }
 dirs = "5.0"
+shellexpand = "3.1"
+
 # Temporary files (used in config module tests)
 # Marked as optional dependency only for tests
 [dev-dependencies]
