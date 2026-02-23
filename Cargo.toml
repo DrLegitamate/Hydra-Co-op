@@ -21,7 +21,7 @@ serde = { version = "1.0.197", features = ["derive"] } # Updated to a recent ver
 toml = "0.8.10" # Updated to a recent version
 
 # Logging
-log = "0.5.1" # Updated to match env_logger 0.11
+log = "0.4" # Fixed: log crate version should be 0.4, not 0.5.1
 env_logger = "0.11.1" # Updated to a recent version
 
 # X11 bindings for window management
