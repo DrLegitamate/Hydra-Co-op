@@ -5,10 +5,37 @@
 
 use std::path::{Path, PathBuf};
 use std::fs;
+use std::io;
 use std::collections::HashMap;
 use serde::{Deserialize, Serialize};
 use log::{info, warn, debug, error};
 use crate::errors::{HydraError, Result};
+
+/// Error type for game detection operations.
+#[derive(Debug)]
+pub enum GameDetectionError {
+    Io(io::Error),
+    AnalysisFailed(String),
+}
+
+impl std::fmt::Display for GameDetectionError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            GameDetectionError::Io(e) => write!(f, "game detection I/O error: {}", e),
+            GameDetectionError::AnalysisFailed(msg) => write!(f, "game analysis failed: {}", msg),
+        }
+    }
+}
+
+impl std::error::Error for GameDetectionError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        if let GameDetectionError::Io(e) = self { Some(e) } else { None }
+    }
+}
+
+impl From<io::Error> for GameDetectionError {
+    fn from(e: io::Error) -> Self { GameDetectionError::Io(e) }
+}
 
 /// Universal game profile that can be applied to any game
 #[derive(Debug, Clone, Serialize, Deserialize)]

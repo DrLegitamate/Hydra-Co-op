@@ -11,6 +11,28 @@ use log::{info, warn, debug, error};
 use crate::errors::{HydraError, Result};
 use crate::game_detection::{GameDetector, GameProfile, GameConfiguration, WorkingDirStrategy, InstanceSeparation};
 
+/// Error type for universal launcher operations.
+#[derive(Debug)]
+pub enum UniversalLauncherError {
+    Io(std::io::Error),
+    LaunchFailed(String),
+}
+
+impl std::fmt::Display for UniversalLauncherError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            UniversalLauncherError::Io(e) => write!(f, "launcher I/O error: {}", e),
+            UniversalLauncherError::LaunchFailed(msg) => write!(f, "launch failed: {}", msg),
+        }
+    }
+}
+
+impl std::error::Error for UniversalLauncherError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        if let UniversalLauncherError::Io(e) = self { Some(e) } else { None }
+    }
+}
+
 /// Universal game launcher that can launch any game with multi-instance support
 pub struct UniversalLauncher {
     game_detector: GameDetector,

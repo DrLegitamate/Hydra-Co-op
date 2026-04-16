@@ -17,6 +17,10 @@ pub mod logging;
 pub mod net_emulator;
 pub mod proton_integration;
 pub mod window_manager;
+pub mod audio_manager;
+pub mod gamepad_manager;
+pub mod compatibility_checker;
+pub mod network_bridge;
 
 // Re-export commonly used types
 pub use errors::{HydraError, Result};

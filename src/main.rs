@@ -69,6 +69,10 @@ mod logging;
 mod net_emulator;
 mod proton_integration;
 mod window_manager;
+mod audio_manager;
+mod gamepad_manager;
+mod compatibility_checker;
+mod network_bridge;
 
 use errors::{HydraError, Result};
 use config::Config;

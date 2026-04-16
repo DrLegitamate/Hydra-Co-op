@@ -210,11 +210,8 @@ impl InputMux {
                 for axis in axes.iter() {
                     let already = all_abs_axes.iter().any(|(a, _)| *a == axis);
                     if !already {
-                        // Try to read real AbsInfo; fall back to a safe generic range.
-                        let abs_info = device.get_abs_state()
-                            .ok()
-                            .and_then(|state| state.get(axis.0 as usize).copied())
-                            .unwrap_or_else(|| evdev::AbsInfo::new(0, -32767, 32767, 16, 128, 1));
+                        // Use a safe generic range that covers all common gamepads/sticks.
+                        let abs_info = evdev::AbsInfo::new(0, -32767, 32767, 16, 128, 1);
                         all_abs_axes.push((axis, abs_info));
                     }
                 }
