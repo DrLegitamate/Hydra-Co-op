@@ -112,7 +112,7 @@ fn run_core_logic(
     config: &Config, // Pass the loaded configuration
     adaptive_config: Option<&mut AdaptiveConfigManager>, // Optional adaptive config
     // Potentially pass other necessary data like network mapping config
-) -> Result<(NetEmulator, InputMux)> {
+) -> Result<(NetEmulator, InputMux, UniversalLauncher)> {
     // Validate inputs
     if instances_usize == 0 {
         return Err(HydraError::validation("Number of instances must be at least 1"));
@@ -395,8 +395,8 @@ fn run_core_logic(
 
     info!("Core application logic execution finished successfully.");
 
-    // Return the instances of background services for potential shutdown
-    Ok((net_emulator, input_mux))
+    // Return background services and the launcher so callers can shut everything down cleanly.
+    Ok((net_emulator, input_mux, universal_launcher))
 }
 
 
@@ -665,10 +665,10 @@ fn run_application() -> Result<()> {
          );
 
 
-         let (mut net_emulator, mut input_mux) = match core_result { // Make instances mutable
-             Ok((net_emu, input_mux)) => {
+         let (mut net_emulator, mut input_mux, mut launcher) = match core_result {
+             Ok((net_emu, input_mux, launcher)) => {
                  info!("Core application logic finished successfully.");
-                 (net_emu, input_mux) // Store the instances
+                 (net_emu, input_mux, launcher)
              },
              Err(e) => {
                  error!("Core application logic failed: {}", e);
@@ -689,12 +689,13 @@ fn run_application() -> Result<()> {
             r.store(false, Ordering::SeqCst);
         }).expect("Error setting Ctrl-C handler");
 
-        // Wait until Ctrl+C is pressed
+        // Wait until Ctrl+C is pressed OR all game instances have exited on their own.
         while running.load(Ordering::SeqCst) {
-             // TODO: Check if game instances are still running and exit if all have quit.
-             // This would involve keeping track of the Child processes returned by launch_multiple_game_instances
-             // and periodically checking their status (e.g., using try_wait()).
-            thread::sleep(Duration::from_millis(100));
+            if !launcher.any_running() {
+                info!("All game instances have exited. Shutting down.");
+                break;
+            }
+            thread::sleep(Duration::from_millis(250));
         }
 
         info!("Shutdown sequence started. Stopping background services...");
@@ -730,8 +731,8 @@ fn run_application() -> Result<()> {
              }
         }
 
-         // TODO: Implement graceful shutdown for game instances (e.g., sending signals)
-         // TODO: Clean up temporary WINEPREFIX directories if created (only if use_proton is true and they were created)
+         // Terminate any game instances that are still running.
+         launcher.shutdown_instances();
 
         info!("Background services stopped. Exiting application.");
     }

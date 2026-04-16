@@ -196,49 +196,80 @@ impl InputMux {
     }
 
     /// Creates virtual uinput devices for each game instance.
-    /// Game instances will listen to these virtual devices.
-    /// Requires write permissions on /dev/uinput.
+    /// Each virtual device mirrors the union of capabilities from all enumerated
+    /// physical devices, so every input type supported by any physical device
+    /// will work in-game.  Requires write permissions on /dev/uinput.
     pub fn create_virtual_devices(&mut self, num_instances: usize) -> Result<(), InputMuxError> {
         info!("Creating virtual input devices for {} instances...", num_instances);
-        // Clear previously created virtual devices
         self.virtual_devices.clear();
 
-        // TODO: Configure virtual device capabilities based on collected physical device capabilities.
-        // For a real application, you'd iterate through `self.devices` to collect
-        // all supported event types (keys, relative, absolute, etc.) and their codes,
-        // then register them with the uinput builder.
-        // Example (simplified):
-        // let mut builder = uinput::Builder::new()?;
-        // for (_, device) in &self.devices {
-        //     if let Ok(keys) = device.supported_keys() {
-        //         for key in keys.iter() {
-        //             builder = builder.event(uinput::event::Key::new(key))?;
-        //         }
-        //     }
-        //     if let Ok(rel_axes) = device.supported_relative_axes() {
-        //          for axis in rel_axes.iter() {
-        //              builder = builder.event(uinput::event::Relative::new(axis))?;
-        //          }
-        //     }
-        //     // ... add other event types
-        // }
-        // Then use this configured builder for each virtual device.
+        // Collect the union of all capabilities across every enumerated physical device.
+        let mut all_keys: Vec<evdev::Key> = Vec::new();
+        let mut all_rel_axes: Vec<evdev::RelativeAxisType> = Vec::new();
+        let mut all_abs_axes: Vec<evdev::AbsoluteAxisType> = Vec::new();
+
+        for (_, device) in &self.devices {
+            if let Some(keys) = device.supported_keys() {
+                for key in keys.iter() {
+                    if !all_keys.contains(&key) {
+                        all_keys.push(key);
+                    }
+                }
+            }
+            if let Some(axes) = device.supported_relative_axes() {
+                for axis in axes.iter() {
+                    if !all_rel_axes.contains(&axis) {
+                        all_rel_axes.push(axis);
+                    }
+                }
+            }
+            if let Some(axes) = device.supported_absolute_axes() {
+                for axis in axes.iter() {
+                    if !all_abs_axes.contains(&axis) {
+                        all_abs_axes.push(axis);
+                    }
+                }
+            }
+        }
+
+        info!(
+            "Collected capabilities from physical devices: {} keys, {} relative axes, {} absolute axes",
+            all_keys.len(),
+            all_rel_axes.len(),
+            all_abs_axes.len()
+        );
+
+        let has_real_caps = !all_keys.is_empty() || !all_rel_axes.is_empty() || !all_abs_axes.is_empty();
 
         for i in 0..num_instances {
-            // Create a unique name for each virtual device instance
             let device_name = format!("HydraCoop Virtual Device {}", i);
             debug!("Creating virtual device: {}", device_name);
 
-            // For now, create a basic virtual device with some common capabilities
-            let virtual_device = uinput::Builder::new()?
-                .name(&device_name)?
-                .event(uinput::event::Relative::Relative)? // Example: Enable relative motion events (mouse)
-                .event(uinput::event::Key::Enter)? // Example: Enable Enter key
-                .event(uinput::event::Key::Space)? // Example: Enable Space key
-                 // Add more capabilities as needed for the games/input types you support
-                .create()?;
+            let mut builder = uinput::Builder::new()?.name(&device_name)?;
 
-            info!("Created virtual device for instance {}: {}", i, virtual_device.sysname()); // Use sysname to get the /dev/input/eventX name
+            if has_real_caps {
+                // Mirror capabilities from physical devices.
+                for &key in &all_keys {
+                    builder = builder.event(uinput::event::Key::new(key))?;
+                }
+                for &axis in &all_rel_axes {
+                    builder = builder.event(uinput::event::Relative::new(axis))?;
+                }
+                for &axis in &all_abs_axes {
+                    builder = builder.event(uinput::event::Absolute::new(axis))?;
+                }
+            } else {
+                // No physical devices enumerated yet; use a safe default set so the
+                // virtual device can at least accept common keyboard/mouse input.
+                warn!("No physical device capabilities found; virtual device {} will use default capability set.", i);
+                builder = builder
+                    .event(uinput::event::Relative::Relative)?
+                    .event(uinput::event::Key::Enter)?
+                    .event(uinput::event::Key::Space)?;
+            }
+
+            let virtual_device = builder.create()?;
+            info!("Created virtual device for instance {}: {}", i, virtual_device.sysname());
             self.virtual_devices.insert(i, virtual_device);
         }
 
@@ -378,8 +409,9 @@ impl InputMux {
                                          break; // Stop thread on broken pipe
                                      }
                                 } else {
-                                    // Sync the virtual device after injecting events (especially button/key events)
-                                    if event.kind() == InputEventKind::Key || event.kind() == InputEventKind::Button {
+                                    // Sync after every event except SYN events themselves to
+                                    // avoid double-sync and keep relative/absolute axes in lock-step.
+                                    if !matches!(event.kind(), InputEventKind::Synchronization(_)) {
                                         if let Err(e) = virtual_device.synchronize() {
                                             error!("Failed to synchronize virtual device for instance {}: {}", instance_index, e);
                                         }

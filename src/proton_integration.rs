@@ -1,9 +1,8 @@
 use std::env;
-use std::fs::File;
+use std::fs::{self, File};
 use std::io::{self, Read};
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio, Child};
-use std::str;
+use std::process::{Command, Stdio};
 use log::{info, error, warn, debug};
 use std::error::Error;
 
@@ -73,65 +72,123 @@ pub fn is_windows_binary(file_path: &Path) -> Result<bool, ProtonError> {
 }
 
 /// Attempts to find the Proton executable path.
-/// This is a complex task as Proton installations vary.
-/// Strategies:
-/// 1. Check PROTON_PATH environment variable.
-/// 2. Search common Steam Library folders (requires knowing Steam's structure).
-/// 3. Rely on user configuration (e.g., in config.toml).
 ///
-/// This function is intended to be called once by the instance manager
-/// before launching multiple game instances.
+/// Search order:
+/// 1. `PROTON_PATH` environment variable.
+/// 2. Common Steam installation paths (`~/.steam`, `~/.local/share/Steam`, Flatpak).
+///    Any `Proton*/proton` binary found is returned (newest version first by name).
 ///
-/// # Returns
-///
-/// * `Result<PathBuf, ProtonError>` - The path to the Proton executable if found.
+/// Returns the path to the `proton` script if found.
 pub fn find_proton_path() -> Result<PathBuf, ProtonError> {
     info!("Attempting to find Proton executable.");
 
-    // 1. Check PROTON_PATH environment variable
+    // 1. Explicit override via environment variable.
     if let Ok(proton_path_env) = env::var("PROTON_PATH") {
-        let path = PathBuf::from(proton_path_env);
+        let path = PathBuf::from(&proton_path_env);
         if path.exists() {
-             info!("Found Proton using PROTON_PATH environment variable: {}", path.display());
+            info!("Found Proton via PROTON_PATH: {}", path.display());
             return Ok(path);
-        } else {
-             warn!("PROTON_PATH environment variable set, but path does not exist: {}", path.display());
+        }
+        warn!("PROTON_PATH='{}' does not exist — continuing search.", proton_path_env);
+    }
+
+    // 2. Search common Steam library locations.
+    let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("/home"));
+
+    let steam_roots: Vec<PathBuf> = vec![
+        home.join(".steam/steam"),
+        home.join(".steam/root"),
+        home.join(".local/share/Steam"),
+        // Flatpak Steam
+        home.join(".var/app/com.valvesoftware.Steam/data/Steam"),
+        // Snap Steam
+        home.join("snap/steam/common/.local/share/Steam"),
+    ];
+
+    for steam_root in &steam_roots {
+        let steamapps = steam_root.join("steamapps/common");
+        if !steamapps.is_dir() {
+            continue;
+        }
+        debug!("Searching for Proton in {}", steamapps.display());
+
+        // Collect all Proton* subdirectories, then sort descending so we get the
+        // newest version first (e.g. "Proton 9.0" before "Proton 8.0").
+        let mut proton_dirs: Vec<PathBuf> = fs::read_dir(&steamapps)
+            .map(|entries| {
+                entries
+                    .filter_map(|e| e.ok())
+                    .map(|e| e.path())
+                    .filter(|p| {
+                        p.is_dir()
+                            && p.file_name()
+                                .and_then(|n| n.to_str())
+                                .map(|n| n.starts_with("Proton"))
+                                .unwrap_or(false)
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+
+        proton_dirs.sort_by(|a, b| b.cmp(a)); // descending — newest version first
+
+        for dir in &proton_dirs {
+            let exe = dir.join("proton");
+            if exe.exists() {
+                info!("Found Proton at: {}", exe.display());
+                return Ok(exe);
+            }
         }
     }
 
-    // 2. Implement searching common Steam Library folders (Requires knowledge of Steam paths and structures)
-    // This is highly dependent on the user's system and Steam installation.
-    // Example (Illustrative - requires implementing actual search logic):
-    /*
-    info!("Searching common Steam Library folders for Proton...");
-    if let Some(steam_path) = dirs::data_dir().map(|d| d.join("Steam")) { // Example: Using dirs crate for common data dir
-         // Implement recursive search within steam_path/steamapps/common/Proton* for proton executable
-         // This requires traversing directories and checking for the 'proton' binary.
-         warn!("Searching Steam Library folders is not yet implemented.");
+    // 3. Check additional Steam library folders listed in libraryfolders.vdf.
+    for steam_root in &steam_roots {
+        let vdf = steam_root.join("steamapps/libraryfolders.vdf");
+        if let Ok(contents) = fs::read_to_string(&vdf) {
+            for line in contents.lines() {
+                // VDF lines look like:  "path"  "/mnt/games/SteamLibrary"
+                if line.trim_start().starts_with("\"path\"") {
+                    let path_str = line
+                        .split('"')
+                        .nth(3)
+                        .unwrap_or("")
+                        .replace("\\\\", "/");
+                    let alt_steamapps = PathBuf::from(&path_str).join("steamapps/common");
+                    if alt_steamapps.is_dir() {
+                        let mut proton_dirs: Vec<PathBuf> = fs::read_dir(&alt_steamapps)
+                            .map(|entries| {
+                                entries
+                                    .filter_map(|e| e.ok())
+                                    .map(|e| e.path())
+                                    .filter(|p| {
+                                        p.is_dir()
+                                            && p.file_name()
+                                                .and_then(|n| n.to_str())
+                                                .map(|n| n.starts_with("Proton"))
+                                                .unwrap_or(false)
+                                    })
+                                    .collect()
+                            })
+                            .unwrap_or_default();
+                        proton_dirs.sort_by(|a, b| b.cmp(a));
+                        for dir in &proton_dirs {
+                            let exe = dir.join("proton");
+                            if exe.exists() {
+                                info!("Found Proton in extra library at: {}", exe.display());
+                                return Ok(exe);
+                            }
+                        }
+                    }
+                }
+            }
+        }
     }
-    */
 
-     // 3. Rely on user configuration (e.g., from the loaded Config)
-     // This would involve passing the Config struct to this function or having
-     // a separate function to get the Proton path from config.
-     // Example:
-     /*
-     if let Some(config_proton_path) = config.proton_path { // Assuming a proton_path field in your Config
-          let path = PathBuf::from(config_proton_path);
-          if path.exists() {
-              info!("Found Proton using configuration file: {}", path.display());
-              return Ok(path);
-          } else {
-              warn!("Proton path specified in configuration does not exist: {}", path.display());
-          }
-     }
-     */
-
-
-    // If no Proton path found by implemented methods
-    error!("Proton executable not found through environment variable or default locations.");
+    error!("Proton executable not found in any known location.");
     Err(ProtonError::ProtonNotFound(
-        "Proton executable not found. Please ensure it's installed and consider setting the PROTON_PATH environment variable or adding it to your configuration.".to_string()
+        "Proton not found. Install it via Steam (Library → Tools → 'Proton X.Y') \
+         or set the PROTON_PATH environment variable to its location."
+            .to_string(),
     ))
 }
 
