@@ -23,15 +23,13 @@ toml = "0.8.10" # Updated to a recent version
 # Logging
 log = "0.4" # Fixed: log crate version should be 0.4, not 0.5.1
 env_logger = "0.11.1" # Updated to a recent version
+fern = "0.7"  # Multi-output logging (stdout + optional file)
 
 # X11 bindings for window management
 x11rb = "0.13.2" # Updated to a recent version
 
 # Linux input device handling (evdev)
 evdev = "0.12.1" # Updated to a recent version
-
-# Linux virtual input device creation (uinput)
-uinput = "0.5.2" # Added missing dependency
 
 # Polling for efficient non-blocking I/O (networking)
 polling = "3.6.0" # Added missing dependency

@@ -11,6 +11,28 @@ use log::{info, warn, debug};
 use crate::errors::{HydraError, Result};
 use crate::game_detection::{GameProfile, GameEngine};
 
+/// Error type for adaptive configuration operations.
+#[derive(Debug)]
+pub enum AdaptiveConfigError {
+    Io(std::io::Error),
+    Other(String),
+}
+
+impl std::fmt::Display for AdaptiveConfigError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            AdaptiveConfigError::Io(e) => write!(f, "adaptive config I/O error: {}", e),
+            AdaptiveConfigError::Other(msg) => write!(f, "adaptive config error: {}", msg),
+        }
+    }
+}
+
+impl std::error::Error for AdaptiveConfigError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        if let AdaptiveConfigError::Io(e) = self { Some(e) } else { None }
+    }
+}
+
 /// Adaptive configuration that learns from successful game launches
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AdaptiveConfig {

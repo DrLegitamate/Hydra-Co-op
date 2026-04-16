@@ -11,6 +11,28 @@ use log::{info, warn, debug, error};
 use crate::errors::{HydraError, Result};
 use crate::game_detection::{GameDetector, GameProfile, GameConfiguration, WorkingDirStrategy, InstanceSeparation};
 
+/// Error type for universal launcher operations.
+#[derive(Debug)]
+pub enum UniversalLauncherError {
+    Io(std::io::Error),
+    LaunchFailed(String),
+}
+
+impl std::fmt::Display for UniversalLauncherError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            UniversalLauncherError::Io(e) => write!(f, "launcher I/O error: {}", e),
+            UniversalLauncherError::LaunchFailed(msg) => write!(f, "launch failed: {}", msg),
+        }
+    }
+}
+
+impl std::error::Error for UniversalLauncherError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        if let UniversalLauncherError::Io(e) = self { Some(e) } else { None }
+    }
+}
+
 /// Universal game launcher that can launch any game with multi-instance support
 pub struct UniversalLauncher {
     game_detector: GameDetector,
@@ -70,6 +92,53 @@ impl UniversalLauncher {
 
         info!("Successfully launched {} game instances with PIDs: {:?}", num_instances, pids);
         Ok(pids)
+    }
+
+    /// Check whether any game instance is still running.
+    pub fn any_running(&mut self) -> bool {
+        self.active_instances
+            .iter_mut()
+            .any(|inst| inst.process.try_wait().map(|s| s.is_none()).unwrap_or(false))
+    }
+
+    /// Terminate all active game instances and wait for them to exit.
+    pub fn shutdown_instances(&mut self) {
+        use std::time::{Duration, Instant};
+        use std::thread;
+
+        if self.active_instances.is_empty() {
+            return;
+        }
+
+        info!("Stopping {} game instance(s)...", self.active_instances.len());
+
+        // Signal every process to stop.
+        for inst in &mut self.active_instances {
+            let _ = inst.process.kill(); // SIGKILL on Unix, TerminateProcess on Windows
+        }
+
+        // Wait up to 3 seconds for all processes to exit.
+        let deadline = Instant::now() + Duration::from_secs(3);
+        while Instant::now() < deadline {
+            let all_done = self.active_instances.iter_mut().all(|inst| {
+                inst.process.try_wait().map(|s| s.is_some()).unwrap_or(true)
+            });
+            if all_done {
+                break;
+            }
+            thread::sleep(Duration::from_millis(100));
+        }
+
+        // Reap child processes to avoid zombies.
+        for inst in &mut self.active_instances {
+            match inst.process.wait() {
+                Ok(status) => info!("Instance {} exited with status: {}", inst.id, status),
+                Err(e) => error!("Error waiting for instance {}: {}", inst.id, e),
+            }
+        }
+
+        self.active_instances.clear();
+        info!("All game instances have been shut down.");
     }
 
     /// Launch a single game instance with universal configuration

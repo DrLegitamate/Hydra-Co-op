@@ -69,6 +69,10 @@ mod logging;
 mod net_emulator;
 mod proton_integration;
 mod window_manager;
+mod audio_manager;
+mod gamepad_manager;
+mod compatibility_checker;
+mod network_bridge;
 
 use errors::{HydraError, Result};
 use config::Config;
@@ -112,7 +116,7 @@ fn run_core_logic(
     config: &Config, // Pass the loaded configuration
     adaptive_config: Option<&mut AdaptiveConfigManager>, // Optional adaptive config
     // Potentially pass other necessary data like network mapping config
-) -> Result<(NetEmulator, InputMux)> {
+) -> Result<(NetEmulator, InputMux, UniversalLauncher)> {
     // Validate inputs
     if instances_usize == 0 {
         return Err(HydraError::validation("Number of instances must be at least 1"));
@@ -395,8 +399,8 @@ fn run_core_logic(
 
     info!("Core application logic execution finished successfully.");
 
-    // Return the instances of background services for potential shutdown
-    Ok((net_emulator, input_mux))
+    // Return background services and the launcher so callers can shut everything down cleanly.
+    Ok((net_emulator, input_mux, universal_launcher))
 }
 
 
@@ -665,10 +669,10 @@ fn run_application() -> Result<()> {
          );
 
 
-         let (mut net_emulator, mut input_mux) = match core_result { // Make instances mutable
-             Ok((net_emu, input_mux)) => {
+         let (mut net_emulator, mut input_mux, mut launcher) = match core_result {
+             Ok((net_emu, input_mux, launcher)) => {
                  info!("Core application logic finished successfully.");
-                 (net_emu, input_mux) // Store the instances
+                 (net_emu, input_mux, launcher)
              },
              Err(e) => {
                  error!("Core application logic failed: {}", e);
@@ -689,49 +693,32 @@ fn run_application() -> Result<()> {
             r.store(false, Ordering::SeqCst);
         }).expect("Error setting Ctrl-C handler");
 
-        // Wait until Ctrl+C is pressed
+        // Wait until Ctrl+C is pressed OR all game instances have exited on their own.
         while running.load(Ordering::SeqCst) {
-             // TODO: Check if game instances are still running and exit if all have quit.
-             // This would involve keeping track of the Child processes returned by launch_multiple_game_instances
-             // and periodically checking their status (e.g., using try_wait()).
-            thread::sleep(Duration::from_millis(100));
+            if !launcher.any_running() {
+                info!("All game instances have exited. Shutting down.");
+                break;
+            }
+            thread::sleep(Duration::from_millis(250));
         }
 
         info!("Shutdown sequence started. Stopping background services...");
 
-        // Stop background threads gracefully and wait for them to join
         if let Err(e) = net_emulator.stop_relay() {
-             error!("Error stopping network relay during shutdown: {}", e);
+            error!("Error stopping network relay during shutdown: {}", e);
         } else {
-             info!("Network relay stop signal sent.");
-             // Wait for the network relay thread to finish
-             if let Some(handle) = net_emulator.join_relay() {
-                 match handle.join() {
-                     Ok(_) => info!("Network relay thread joined successfully."),
-                     Err(e) => error!("Error joining network relay thread: {:?}", e), // Thread panicked
-                 }
-             } else {
-                 debug!("Network relay thread handle not available to join.");
-             }
+            info!("Network relay stopped.");
         }
 
+        // stop_capture() signals threads and joins them internally.
         if let Err(e) = input_mux.stop_capture() {
-             error!("Error stopping input capture during shutdown: {}", e);
+            error!("Error stopping input capture during shutdown: {}", e);
         } else {
-             info!("Input capture stop signal sent.");
-             // Wait for the input capture thread to finish
-             if let Some(handle) = input_mux.join_capture() {
-                 match handle.join() {
-                     Ok(_) => info!("Input capture thread joined successfully."),
-                     Err(e) => error!("Error joining input capture thread: {:?}", e), // Thread panicked
-                 }
-             } else {
-                 debug!("Input capture thread handle not available to join.");
-             }
+            info!("Input capture stopped.");
         }
 
-         // TODO: Implement graceful shutdown for game instances (e.g., sending signals)
-         // TODO: Clean up temporary WINEPREFIX directories if created (only if use_proton is true and they were created)
+         // Terminate any game instances that are still running.
+         launcher.shutdown_instances();
 
         info!("Background services stopped. Exiting application.");
     }
