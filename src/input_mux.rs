@@ -1,35 +1,26 @@
 use evdev::{Device, InputEvent, InputEventKind, ReadFlag};
+use evdev::uinput::{VirtualDevice, VirtualDeviceBuilder};
 use std::collections::HashMap;
 use std::fs;
-use std::io::{self, Read, Write}; // Import Read and Write
+use std::io::{self};
 use std::path::Path;
 use std::env;
-use std::sync::{Arc, RwLock};
-use log::{info, warn, error, debug}; // Import debug log level
-use std::thread::{self, JoinHandle}; // Import JoinHandle
+use std::sync::{Arc, Mutex};
+use log::{info, warn, error, debug};
+use std::thread::{self, JoinHandle};
 use std::time::Duration;
-use std::sync::atomic::{AtomicBool, Ordering}; // Import AtomicBool and Ordering
-
-// Import serde for serialization support
+use std::sync::atomic::{AtomicBool, Ordering};
 use serde::{Deserialize, Serialize};
-// We will use the uinput-rs crate for creating virtual input devices.
-// Add this to your Cargo.toml:
-// [dependencies]
-// uinput = "0.5" # Or the latest version
-// evdev = "0.12" # Ensure evdev version is >= 0.12 for read_with_timeout
-// log = "0.4"
-// env_logger = "0.11" # Or another logger
 
-// Custom error type for input multiplexing operations
+/// Custom error type for input multiplexing operations.
 #[derive(Debug)]
 pub enum InputMuxError {
     IoError(io::Error),
     EvdevError(evdev::Error),
-    UinputError(uinput::Error),
     DeviceNotFound(String),
-    MissingDeviceInfo, // Consider removing or making more specific if not used
+    MissingDeviceInfo,
     GenericError(String),
-    AlreadyRunning, // Added error for starting capture when already running
+    AlreadyRunning,
 }
 
 impl std::fmt::Display for InputMuxError {
@@ -37,9 +28,8 @@ impl std::fmt::Display for InputMuxError {
         match self {
             InputMuxError::IoError(e) => write!(f, "I/O error: {}", e),
             InputMuxError::EvdevError(e) => write!(f, "evdev error: {}", e),
-            InputMuxError::UinputError(e) => write!(f, "uinput error: {}", e),
             InputMuxError::DeviceNotFound(name) => write!(f, "Input device not found: {}", name),
-            InputMuxError::MissingDeviceInfo => write!(f, "Missing device information"), // Check if still needed
+            InputMuxError::MissingDeviceInfo => write!(f, "Missing device information"),
             InputMuxError::GenericError(msg) => write!(f, "Input multiplexer error: {}", msg),
             InputMuxError::AlreadyRunning => write!(f, "Input capture is already running"),
         }
@@ -51,7 +41,6 @@ impl std::error::Error for InputMuxError {
         match self {
             InputMuxError::IoError(e) => Some(e),
             InputMuxError::EvdevError(e) => Some(e),
-            InputMuxError::UinputError(e) => Some(e),
             _ => None,
         }
     }
@@ -66,12 +55,6 @@ impl From<io::Error> for InputMuxError {
 impl From<evdev::Error> for InputMuxError {
     fn from(err: evdev::Error) -> Self {
         InputMuxError::EvdevError(err)
-    }
-}
-
-impl From<uinput::Error> for InputMuxError {
-    fn from(err: uinput::Error) -> Self {
-        InputMuxError::UinputError(err)
     }
 }
 
@@ -118,8 +101,8 @@ pub struct InputMux {
     devices: HashMap<DeviceIdentifier, Device>,
     // Map DeviceIdentifier to the instance index (0, 1, 2...)
     instance_map: HashMap<DeviceIdentifier, usize>,
-    // Map instance index to its virtual uinput device
-    virtual_devices: HashMap<usize, uinput::Device>,
+    // Map instance index to its virtual uinput device (Arc+Mutex for cross-thread access)
+    virtual_devices: HashMap<usize, Arc<Mutex<VirtualDevice>>>,
     // Flag to signal capture threads to stop
     running: Arc<AtomicBool>,
     // Store join handles for capture threads to wait on
@@ -195,18 +178,18 @@ impl InputMux {
         Ok(())
     }
 
-    /// Creates virtual uinput devices for each game instance.
-    /// Each virtual device mirrors the union of capabilities from all enumerated
-    /// physical devices, so every input type supported by any physical device
-    /// will work in-game.  Requires write permissions on /dev/uinput.
+    /// Creates virtual uinput devices for each game instance using evdev's built-in
+    /// VirtualDeviceBuilder.  Each device mirrors the union of capabilities from all
+    /// enumerated physical devices so that every key, axis, and button works in-game.
+    /// Requires write permissions on /dev/uinput.
     pub fn create_virtual_devices(&mut self, num_instances: usize) -> Result<(), InputMuxError> {
-        info!("Creating virtual input devices for {} instances...", num_instances);
+        info!("Creating {} virtual input device(s)...", num_instances);
         self.virtual_devices.clear();
 
-        // Collect the union of all capabilities across every enumerated physical device.
+        // --- collect the union of all physical-device capabilities ---
         let mut all_keys: Vec<evdev::Key> = Vec::new();
         let mut all_rel_axes: Vec<evdev::RelativeAxisType> = Vec::new();
-        let mut all_abs_axes: Vec<evdev::AbsoluteAxisType> = Vec::new();
+        let mut all_abs_axes: Vec<(evdev::AbsoluteAxisType, evdev::AbsInfo)> = Vec::new();
 
         for (_, device) in &self.devices {
             if let Some(keys) = device.supported_keys() {
@@ -225,55 +208,80 @@ impl InputMux {
             }
             if let Some(axes) = device.supported_absolute_axes() {
                 for axis in axes.iter() {
-                    if !all_abs_axes.contains(&axis) {
-                        all_abs_axes.push(axis);
+                    let already = all_abs_axes.iter().any(|(a, _)| *a == axis);
+                    if !already {
+                        // Try to read real AbsInfo; fall back to a safe generic range.
+                        let abs_info = device.get_abs_state()
+                            .ok()
+                            .and_then(|state| state.get(axis.0 as usize).copied())
+                            .unwrap_or_else(|| evdev::AbsInfo::new(0, -32767, 32767, 16, 128, 1));
+                        all_abs_axes.push((axis, abs_info));
                     }
                 }
             }
         }
 
         info!(
-            "Collected capabilities from physical devices: {} keys, {} relative axes, {} absolute axes",
-            all_keys.len(),
-            all_rel_axes.len(),
-            all_abs_axes.len()
+            "Capabilities collected: {} keys, {} relative axes, {} absolute axes",
+            all_keys.len(), all_rel_axes.len(), all_abs_axes.len()
         );
 
-        let has_real_caps = !all_keys.is_empty() || !all_rel_axes.is_empty() || !all_abs_axes.is_empty();
+        let has_real_caps =
+            !all_keys.is_empty() || !all_rel_axes.is_empty() || !all_abs_axes.is_empty();
 
+        // --- create one virtual device per instance ---
         for i in 0..num_instances {
             let device_name = format!("HydraCoop Virtual Device {}", i);
             debug!("Creating virtual device: {}", device_name);
 
-            let mut builder = uinput::Builder::new()?.name(&device_name)?;
+            let mut builder = VirtualDeviceBuilder::new()
+                .map_err(InputMuxError::IoError)?
+                .name(&device_name);
 
             if has_real_caps {
-                // Mirror capabilities from physical devices.
-                for &key in &all_keys {
-                    builder = builder.event(uinput::event::Key::new(key))?;
+                if !all_keys.is_empty() {
+                    let mut key_set = evdev::AttributeSet::<evdev::Key>::new();
+                    for &k in &all_keys {
+                        key_set.insert(k);
+                    }
+                    builder = builder.with_keys(&key_set)
+                        .map_err(InputMuxError::IoError)?;
                 }
-                for &axis in &all_rel_axes {
-                    builder = builder.event(uinput::event::Relative::new(axis))?;
+                if !all_rel_axes.is_empty() {
+                    let mut rel_set = evdev::AttributeSet::<evdev::RelativeAxisType>::new();
+                    for &a in &all_rel_axes {
+                        rel_set.insert(a);
+                    }
+                    builder = builder.with_relative_axes(&rel_set)
+                        .map_err(InputMuxError::IoError)?;
                 }
-                for &axis in &all_abs_axes {
-                    builder = builder.event(uinput::event::Absolute::new(axis))?;
+                for &(axis, abs_info) in &all_abs_axes {
+                    let setup = evdev::UinputAbsSetup::new(axis, abs_info);
+                    builder = builder.with_absolute_axis(&setup)
+                        .map_err(InputMuxError::IoError)?;
                 }
             } else {
-                // No physical devices enumerated yet; use a safe default set so the
-                // virtual device can at least accept common keyboard/mouse input.
-                warn!("No physical device capabilities found; virtual device {} will use default capability set.", i);
-                builder = builder
-                    .event(uinput::event::Relative::Relative)?
-                    .event(uinput::event::Key::Enter)?
-                    .event(uinput::event::Key::Space)?;
+                // No physical devices enumerated yet — register a safe minimum so the
+                // virtual device can at least accept common keyboard/mouse events.
+                warn!("No physical device capabilities found; virtual device {} will use a default capability set.", i);
+                let mut key_set = evdev::AttributeSet::<evdev::Key>::new();
+                key_set.insert(evdev::Key::KEY_ENTER);
+                key_set.insert(evdev::Key::KEY_SPACE);
+                builder = builder.with_keys(&key_set)
+                    .map_err(InputMuxError::IoError)?;
+                let mut rel_set = evdev::AttributeSet::<evdev::RelativeAxisType>::new();
+                rel_set.insert(evdev::RelativeAxisType::REL_X);
+                rel_set.insert(evdev::RelativeAxisType::REL_Y);
+                builder = builder.with_relative_axes(&rel_set)
+                    .map_err(InputMuxError::IoError)?;
             }
 
-            let virtual_device = builder.create()?;
-            info!("Created virtual device for instance {}: {}", i, virtual_device.sysname());
-            self.virtual_devices.insert(i, virtual_device);
+            let virtual_device = builder.build().map_err(InputMuxError::IoError)?;
+            info!("Created virtual device for instance {}", i);
+            self.virtual_devices.insert(i, Arc::new(Mutex::new(virtual_device)));
         }
 
-        info!("Finished creating virtual devices. Created {} devices.", self.virtual_devices.len());
+        info!("Finished creating virtual devices ({} created).", self.virtual_devices.len());
         Ok(())
     }
 
@@ -381,40 +389,31 @@ impl InputMux {
                 info!("Starting capture thread for device: {} (mapped to instance {})", identifier.name, instance_index);
 
                 let handle = thread::spawn(move || {
-                    // Get the virtual device for the target instance within the thread
-                    let virtual_device = match virtual_devices.get(&instance_index) {
-                        Some(dev) => dev,
+                    // Grab the Arc for this instance's virtual device once before the loop.
+                    let vd_arc = match virtual_devices.get(&instance_index) {
+                        Some(arc) => arc.clone(),
                         None => {
-                             error!("Capture thread: Virtual device for instance {} not found. Exiting thread for device '{}'.", instance_index, identifier.name);
-                             return; // Exit thread if virtual device is missing
+                            error!("Capture thread: virtual device for instance {} not found. Exiting thread for device '{}'.", instance_index, identifier.name);
+                            return;
                         }
                     };
 
-                    // Use a timeout to allow the thread to check the running flag periodically
-                    let read_timeout = Duration::from_millis(100); // Check every 100ms
+                    let read_timeout = Duration::from_millis(100);
 
                     while running_flag.load(Ordering::SeqCst) {
                         match device.read_with_timeout(read_timeout) {
                             Ok(Some(event)) => {
-                                debug!("Captured event from device '{}': {:?}", identifier.name, event);
+                                debug!("Captured event from '{}': {:?}", identifier.name, event);
 
-                                // Inject the event into the virtual device
-                                debug!("Injecting event to virtual device for instance {}: {:?}", instance_index, event);
-                                if let Err(e) = virtual_device.write_event(&event) {
-                                    error!("Failed to inject event for device '{}' to instance {}: {}", identifier.name, instance_index, e);
-                                    // Depending on the error, you might want to break the loop or handle it differently
-                                     // For critical errors, break; otherwise, log and continue.
-                                     if e.kind() == io::ErrorKind::BrokenPipe {
-                                         error!("Broken pipe when writing to virtual device for instance {}. Exiting thread for device '{}'.", instance_index, identifier.name);
-                                         break; // Stop thread on broken pipe
-                                     }
-                                } else {
-                                    // Sync after every event except SYN events themselves to
-                                    // avoid double-sync and keep relative/absolute axes in lock-step.
-                                    if !matches!(event.kind(), InputEventKind::Synchronization(_)) {
-                                        if let Err(e) = virtual_device.synchronize() {
-                                            error!("Failed to synchronize virtual device for instance {}: {}", instance_index, e);
-                                        }
+                                // Forward the event to the virtual device.
+                                // SYN events from the physical device are forwarded as-is so
+                                // the virtual device stays in sync without a separate sync call.
+                                let mut vd = vd_arc.lock().unwrap();
+                                if let Err(e) = vd.emit(&[event]) {
+                                    error!("Failed to inject event for '{}' to instance {}: {}", identifier.name, instance_index, e);
+                                    if e.kind() == io::ErrorKind::BrokenPipe {
+                                        error!("Broken pipe on virtual device for instance {}. Stopping capture for '{}'.", instance_index, identifier.name);
+                                        break;
                                     }
                                 }
                             }
@@ -517,13 +516,19 @@ impl InputMux {
          self.devices.keys().find(|id| id.name == name).cloned()
      }
 
-    /// Gets the system name (/dev/input/eventX) for the virtual device of a given instance.
+    /// Returns the sysfs path component (e.g. `event5`) for a given instance's virtual device.
     pub fn get_virtual_device_sysname(&self, instance_index: usize) -> Option<String> {
-        self.virtual_devices.get(&instance_index)
-            .and_then(|dev| dev.syspath())
-            .and_then(|p| p.file_name())
-            .and_then(|n| n.to_str())
-            .map(|s| s.to_string())
+        self.virtual_devices.get(&instance_index).and_then(|arc| {
+            arc.lock().ok().and_then(|dev| {
+                dev.enumerate_dev_nodes_blocking()
+                    .ok()
+                    .and_then(|mut iter| iter.next())
+                    .and_then(|path| {
+                        path.ok()
+                            .and_then(|p| p.file_name().map(|n| n.to_string_lossy().into_owned()))
+                    })
+            })
+        })
     }
     
     /// Get statistics about the input multiplexer

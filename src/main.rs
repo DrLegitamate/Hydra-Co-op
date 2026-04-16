@@ -700,35 +700,17 @@ fn run_application() -> Result<()> {
 
         info!("Shutdown sequence started. Stopping background services...");
 
-        // Stop background threads gracefully and wait for them to join
         if let Err(e) = net_emulator.stop_relay() {
-             error!("Error stopping network relay during shutdown: {}", e);
+            error!("Error stopping network relay during shutdown: {}", e);
         } else {
-             info!("Network relay stop signal sent.");
-             // Wait for the network relay thread to finish
-             if let Some(handle) = net_emulator.join_relay() {
-                 match handle.join() {
-                     Ok(_) => info!("Network relay thread joined successfully."),
-                     Err(e) => error!("Error joining network relay thread: {:?}", e), // Thread panicked
-                 }
-             } else {
-                 debug!("Network relay thread handle not available to join.");
-             }
+            info!("Network relay stopped.");
         }
 
+        // stop_capture() signals threads and joins them internally.
         if let Err(e) = input_mux.stop_capture() {
-             error!("Error stopping input capture during shutdown: {}", e);
+            error!("Error stopping input capture during shutdown: {}", e);
         } else {
-             info!("Input capture stop signal sent.");
-             // Wait for the input capture thread to finish
-             if let Some(handle) = input_mux.join_capture() {
-                 match handle.join() {
-                     Ok(_) => info!("Input capture thread joined successfully."),
-                     Err(e) => error!("Error joining input capture thread: {:?}", e), // Thread panicked
-                 }
-             } else {
-                 debug!("Input capture thread handle not available to join.");
-             }
+            info!("Input capture stopped.");
         }
 
          // Terminate any game instances that are still running.
