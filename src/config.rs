@@ -182,7 +182,7 @@ impl Config {
         
         // Validate instance count based on input mappings
         let instance_count = self.input_mappings.len();
-        if instance_count == 0 || instance_count > defaults::MAX_INSTANCES {
+        if instance_count == 0 || instance_count > crate::defaults::MAX_INSTANCES {
             return Err(ValidationError::InvalidInstanceCount(instance_count).into());
         }
         

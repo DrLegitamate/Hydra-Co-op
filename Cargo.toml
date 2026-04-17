@@ -8,51 +8,43 @@ license = "MIT"
 repository = "https://github.com/DrLegitamate/Hydra-Co-op"
 
 [dependencies]
-# GTK 4 bindings for the GUI
+# GTK 4 bindings for the GUI (re-exports glib/gdk we need)
 gtk = { version = "0.9", package = "gtk4" }
-glib = "0.20"
-gdk = "0.9"
 
 # Command-line argument parsing
-clap = { version = "4.5", features = ["derive"] } # Updated to a recent 4.x version
+clap = { version = "4.5", features = ["derive", "env"] }
 
 # Serialization/Deserialization for configuration
-serde = { version = "1.0.197", features = ["derive"] } # Updated to a recent version
-toml = "0.8.10" # Updated to a recent version
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+toml = "0.8"
 
 # Logging
-log = "0.4" # Fixed: log crate version should be 0.4, not 0.5.1
-env_logger = "0.11.1" # Updated to a recent version
-fern = "0.7"  # Multi-output logging (stdout + optional file)
+log = "0.4"
+fern = "0.7"
 
 # X11 bindings for window management
-x11rb = "0.13.2" # Updated to a recent version
+x11rb = "0.13"
 
 # Linux input device handling (evdev)
-evdev = "0.12.1" # Updated to a recent version
+evdev = "0.12"
 
-# Polling for efficient non-blocking I/O (networking)
-polling = "3.6.0" # Added missing dependency
+# Non-blocking socket polling (used by net_emulator)
+polling = "3.6"
 
 # Graceful shutdown on Ctrl+C
-ctrlc = "3.4.4" # Added missing dependency
+ctrlc = "3.4"
 
-# JSON serialization/deserialization (for DeviceIdentifier in GUI)
-serde_json = "1.0.114" # Added missing dependency
-
-# Additional dependencies for improved functionality
+# Error handling helpers
 thiserror = "1.0"
-anyhow = "1.0"
-tokio = { version = "1.0", features = ["full"] }
+
+# Config/data directory lookup
 dirs = "5.0"
-shellexpand = "3.1"
 
-# Temporary files (used in config module tests)
-# Marked as optional dependency only for tests
 [dev-dependencies]
-tempfile = "3.10.1"
+tempfile = "3.10"
+env_logger = "0.11"
 
-# Optional: Add optimization for release builds
 [profile.release]
 opt-level = 3
 lto = true

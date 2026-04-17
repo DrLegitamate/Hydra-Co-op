@@ -15,10 +15,7 @@ pub enum HydraError {
     
     #[error("Input multiplexer error: {0}")]
     InputMux(#[from] crate::input_mux::InputMuxError),
-    
-    #[error("Instance manager error: {0}")]
-    InstanceManager(#[from] crate::instance_manager::InstanceManagerError),
-    
+
     #[error("Network emulator error: {0}")]
     NetEmulator(#[from] crate::net_emulator::NetEmulatorError),
     
