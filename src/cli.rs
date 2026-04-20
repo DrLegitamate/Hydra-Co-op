@@ -27,7 +27,7 @@ pub fn build_cli() -> Command {
                 .help("Defines the number of game instances (players) to launch")
                 .required(false) // Made optional since GUI mode doesn't require it
                 // Add validation to ensure the value is a positive integer
-                .value_parser(clap::value_parser!(u32).range(1..=crate::defaults::MAX_INSTANCES as u32)),
+                .value_parser(clap::value_parser!(u32).range(1..=(crate::defaults::MAX_INSTANCES as i64))),
         )
         .arg(
             Arg::new("input_devices")
@@ -111,14 +111,12 @@ mod tests {
     }
 
     #[test]
-    fn test_required_arguments() {
-        // Test that required arguments are indeed required
+    fn test_no_arguments_is_ok() {
+        // All CLI args are optional (GUI mode launches with none), so parsing with
+        // no args must succeed.
         let mut cmd = build_cli();
-        // Calling get_matches_from with missing required args should result in an error
         let result = cmd.try_get_matches_from(vec![command_name()]);
-        assert!(result.is_err(), "Should fail without required arguments");
-        let err = result.unwrap_err();
-        assert_eq!(err.kind(), clap::error::ErrorKind::DisplayHelpOnMissingArgOrSubcommand);
+        assert!(result.is_ok(), "Parsing with no arguments should succeed");
     }
 
      #[test]
@@ -174,7 +172,7 @@ mod tests {
          ]);
          assert!(result.is_err());
          let err = result.unwrap_err();
-         assert_eq!(err.kind(), clap::error::ErrorKind::ValueValidation);
+         assert_eq!(err.kind(), clap::error::ErrorKind::InvalidValue);
      }
 
 

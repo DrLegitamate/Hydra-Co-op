@@ -330,7 +330,7 @@ mod tests {
         assert_eq!(command.get_program(), &*proton_path);
         let args: Vec<&std::ffi::OsStr> = command.get_args().collect();
         assert!(args.contains(&std::ffi::OsStr::new("run")));
-        assert!(args.contains(&*game_path.as_os_str()));
+        assert!(args.contains(&game_path.as_os_str()));
 
         // Check environment variables
         let envs: HashMap<std::ffi::OsString, std::ffi::OsString> = command.get_envs().filter_map(|(key, value_option)| {

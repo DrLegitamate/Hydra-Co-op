@@ -1,8 +1,9 @@
-use evdev::{Device, InputEvent, InputEventKind, ReadFlag};
+use evdev::Device;
 use evdev::uinput::{VirtualDevice, VirtualDeviceBuilder};
 use std::collections::HashMap;
 use std::fs;
-use std::io::{self};
+use std::io;
+use std::os::fd::{AsRawFd, BorrowedFd};
 use std::path::Path;
 use std::env;
 use std::sync::{Arc, Mutex};
@@ -86,8 +87,8 @@ impl From<&Device> for DeviceIdentifier {
         let input_id = device.input_id();
         DeviceIdentifier {
             name: device.name().unwrap_or("Unknown").to_string(),
-            phys: device.phys().map(|s| s.to_string()),
-            bustype: input_id.bustype(),
+            phys: device.physical_path().map(|s| s.to_string()),
+            bustype: input_id.bus_type().0,
             vendor_id: input_id.vendor(),
             product_id: input_id.product(),
             version: input_id.version(),
@@ -95,6 +96,93 @@ impl From<&Device> for DeviceIdentifier {
     }
 }
 
+
+/// Per-thread capture loop. Owns one physical Device, polls its fd in level-triggered
+/// mode so the loop can wake on events without busy-spinning, then forwards each
+/// fetched event to the virtual device for the assigned instance.
+fn run_capture_loop(
+    mut device: Device,
+    identifier: DeviceIdentifier,
+    instance_index: usize,
+    virtual_devices: HashMap<usize, Arc<Mutex<VirtualDevice>>>,
+    running_flag: Arc<std::sync::atomic::AtomicBool>,
+) {
+    let vd_arc = match virtual_devices.get(&instance_index) {
+        Some(arc) => arc.clone(),
+        None => {
+            error!("Capture thread: virtual device for instance {} not found. Exiting thread for device '{}'.", instance_index, identifier.name);
+            return;
+        }
+    };
+
+    let poller = match polling::Poller::new() {
+        Ok(p) => p,
+        Err(e) => {
+            error!("Capture thread for '{}': failed to create poller: {}", identifier.name, e);
+            return;
+        }
+    };
+    // SAFETY: we delete the device from the poller before dropping it (at thread exit
+    // when `device` drops, after the loop returns and `poller` is dropped).
+    if let Err(e) = unsafe {
+        poller.add_with_mode(
+            &device,
+            polling::Event::readable(0),
+            polling::PollMode::Level,
+        )
+    } {
+        error!("Capture thread for '{}': failed to register device with poller: {}", identifier.name, e);
+        return;
+    }
+
+    let mut events = polling::Events::new();
+    let wait_timeout = Duration::from_millis(100);
+
+    while running_flag.load(Ordering::SeqCst) {
+        events.clear();
+        match poller.wait(&mut events, Some(wait_timeout)) {
+            Ok(0) => continue,
+            Ok(_) => {}
+            Err(ref e) if e.kind() == io::ErrorKind::Interrupted => continue,
+            Err(e) => {
+                error!("Capture thread for '{}': poller error: {}", identifier.name, e);
+                break;
+            }
+        }
+
+        match device.fetch_events() {
+            Ok(iter) => {
+                let batch: Vec<_> = iter.collect();
+                if batch.is_empty() {
+                    continue;
+                }
+                let mut vd = vd_arc.lock().unwrap();
+                if let Err(e) = vd.emit(&batch) {
+                    error!("Failed to inject events for '{}' to instance {}: {}", identifier.name, instance_index, e);
+                    if e.kind() == io::ErrorKind::BrokenPipe {
+                        error!("Broken pipe on virtual device for instance {}. Stopping capture for '{}'.", instance_index, identifier.name);
+                        break;
+                    }
+                }
+            }
+            Err(ref e) if e.kind() == io::ErrorKind::WouldBlock => continue,
+            Err(ref e) if e.kind() == io::ErrorKind::Interrupted => continue,
+            Err(e) => {
+                error!("Error reading events from device '{}': {}", identifier.name, e);
+                if matches!(e.kind(), io::ErrorKind::BrokenPipe | io::ErrorKind::NotFound) {
+                    warn!("Device '{}' appears disconnected. Stopping capture for this device.", identifier.name);
+                }
+                break;
+            }
+        }
+    }
+
+    // Required by Poller's safety contract: deregister before the device fd is dropped.
+    // SAFETY: the device is still alive at this point and its fd is still valid.
+    let fd = unsafe { BorrowedFd::borrow_raw(device.as_raw_fd()) };
+    let _ = poller.delete(fd);
+    info!("Capture thread for device '{}' exited.", identifier.name);
+}
 
 pub struct InputMux {
     // Map DeviceIdentifier to the opened evdev::Device
@@ -369,83 +457,37 @@ impl InputMux {
         }
 
         info!("Starting input event capture and routing...");
-        self.running.store(true, Ordering::SeqCst); // Set running flag
+        self.running.store(true, Ordering::SeqCst);
 
         let mut join_handles = Vec::new();
 
-        // Iterate over devices that are actually mapped to an instance
-        for (identifier, instance_index) in &self.instance_map {
-             // Find the actual device from the devices map
-             if let Some(device) = self.devices.get(identifier) {
-                let mut device = device.clone(); // Clone the device for the thread
-                let identifier = identifier.clone(); // Clone the identifier
-                let virtual_devices = self.virtual_devices.clone(); // Clone the map of virtual devices
-                let running_flag = self.running.clone(); // Clone the running flag for the thread
-                let instance_index = *instance_index; // Copy the instance index
+        // Take ownership of mapped devices for their capture threads. evdev's Device
+        // is not Clone and fetch_events requires &mut self, so each thread must own
+        // its physical device exclusively. Unmapped devices remain in self.devices.
+        let mapped_identifiers: Vec<DeviceIdentifier> = self.instance_map.keys().cloned().collect();
+        for identifier in mapped_identifiers {
+            let instance_index = match self.instance_map.get(&identifier).copied() {
+                Some(i) => i,
+                None => continue,
+            };
+            let device = match self.devices.remove(&identifier) {
+                Some(d) => d,
+                None => {
+                    error!("Mapped device identifier {:?} not found among enumerated devices.", identifier);
+                    continue;
+                }
+            };
 
-                info!("Starting capture thread for device: {} (mapped to instance {})", identifier.name, instance_index);
+            let virtual_devices = self.virtual_devices.clone();
+            let running_flag = self.running.clone();
+            let id_for_thread = identifier.clone();
 
-                let handle = thread::spawn(move || {
-                    // Grab the Arc for this instance's virtual device once before the loop.
-                    let vd_arc = match virtual_devices.get(&instance_index) {
-                        Some(arc) => arc.clone(),
-                        None => {
-                            error!("Capture thread: virtual device for instance {} not found. Exiting thread for device '{}'.", instance_index, identifier.name);
-                            return;
-                        }
-                    };
+            info!("Starting capture thread for device: {} (mapped to instance {})", id_for_thread.name, instance_index);
 
-                    let read_timeout = Duration::from_millis(100);
-
-                    while running_flag.load(Ordering::SeqCst) {
-                        match device.read_with_timeout(read_timeout) {
-                            Ok(Some(event)) => {
-                                debug!("Captured event from '{}': {:?}", identifier.name, event);
-
-                                // Forward the event to the virtual device.
-                                // SYN events from the physical device are forwarded as-is so
-                                // the virtual device stays in sync without a separate sync call.
-                                let mut vd = vd_arc.lock().unwrap();
-                                if let Err(e) = vd.emit(&[event]) {
-                                    error!("Failed to inject event for '{}' to instance {}: {}", identifier.name, instance_index, e);
-                                    if e.kind() == io::ErrorKind::BrokenPipe {
-                                        error!("Broken pipe on virtual device for instance {}. Stopping capture for '{}'.", instance_index, identifier.name);
-                                        break;
-                                    }
-                                }
-                            }
-                            Ok(None) => {
-                                // Timeout occurred, continue the loop to check running_flag
-                                debug!("Read timeout for device '{}', checking stop flag.", identifier.name);
-                            }
-                            Err(e) => {
-                                // Handle errors reading from the device
-                                error!("Error reading event from device '{}' ({:?}): {}", identifier.name, identifier, e);
-                                match e.kind() {
-                                    io::ErrorKind::BrokenPipe | io::ErrorKind::NotFound => {
-                                        warn!("Device '{}' appears disconnected. Stopping capture for this device.", identifier.name);
-                                        break; // Stop the thread for this device
-                                    }
-                                     io::ErrorKind::Interrupted => {
-                                         // Read was interrupted by a signal, retry
-                                         debug!("Read interrupted for device '{}', retrying.", identifier.name);
-                                         continue;
-                                     }
-                                     // Handle other IO errors as needed
-                                    _ => {
-                                         error!("Unhandled IO error for device '{}'. Exiting thread.", identifier.name);
-                                         break;
-                                     }
-                                }
-                            }
-                        }
-                    }
-                    info!("Capture thread for device '{}' exited.", identifier.name);
-                });
-                join_handles.push(handle);
-             } else {
-                 error!("Mapped device identifier {:?} not found in enumerated devices. Cannot start capture thread for this mapping.", identifier);
-             }
+            let handle = thread::spawn(move || {
+                run_capture_loop(device, id_for_thread, instance_index, virtual_devices, running_flag);
+            });
+            join_handles.push(handle);
         }
 
         self.capture_threads = Some(join_handles);
@@ -489,8 +531,9 @@ impl InputMux {
         info!("Mapping device {:?} to instance index {}", identifier, instance_index);
         if self.devices.contains_key(&identifier) {
             if self.virtual_devices.contains_key(&instance_index) {
+                let id_for_log = identifier.clone();
                 self.instance_map.insert(identifier, instance_index);
-                info!("Successfully mapped device {:?} to instance {}", identifier, instance_index);
+                info!("Successfully mapped device {:?} to instance {}", id_for_log, instance_index);
                 Ok(())
             } else {
                 warn!("Virtual device for instance index {} not found. Cannot map device {:?}.", instance_index, identifier);
@@ -498,7 +541,7 @@ impl InputMux {
             }
         } else {
             warn!("Physical input device {:?} not found among enumerated devices. Cannot map to instance {}. Available devices: {:?}", identifier, instance_index, self.devices.keys());
-            Err(InputMuxError::DeviceNotFound(format!("{:?}", identifier))) // Return error with identifier info
+            Err(InputMuxError::DeviceNotFound(format!("{:?}", identifier)))
         }
     }
 
@@ -516,7 +559,7 @@ impl InputMux {
     /// Returns the sysfs path component (e.g. `event5`) for a given instance's virtual device.
     pub fn get_virtual_device_sysname(&self, instance_index: usize) -> Option<String> {
         self.virtual_devices.get(&instance_index).and_then(|arc| {
-            arc.lock().ok().and_then(|dev| {
+            arc.lock().ok().and_then(|mut dev| {
                 dev.enumerate_dev_nodes_blocking()
                     .ok()
                     .and_then(|mut iter| iter.next())

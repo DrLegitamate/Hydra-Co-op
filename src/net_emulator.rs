@@ -2,24 +2,18 @@ use std::net::{UdpSocket, SocketAddr};
 use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
 use log::{info, error, warn, debug};
-use std::io::{self, Read}; // Import Read trait for potential error handling
-use std::sync::mpsc::{self, Sender, Receiver, TryRecvError};
+use std::io;
+use std::sync::mpsc::{self, Sender, TryRecvError};
 use std::thread;
 use std::time::Duration;
-use std::error::Error; // Import Error trait
-
-// We will use the 'polling' crate for handling multiple non-blocking sockets.
-// Add this to your Cargo.toml:
-// [dependencies]
-// polling = "2.3" # Or the latest version
+use std::error::Error;
 
 // Custom error type for network emulation operations
 #[derive(Debug)]
 pub enum NetEmulatorError {
     IoError(io::Error),
     GenericError(String),
-    PollingError(polling::Error),
-    ChannelError(mpsc::SendError<()>), // For errors sending on the stop channel
+    ChannelError(mpsc::SendError<()>),
 }
 
 impl std::fmt::Display for NetEmulatorError {
@@ -27,7 +21,6 @@ impl std::fmt::Display for NetEmulatorError {
         match self {
             NetEmulatorError::IoError(e) => write!(f, "Network emulator I/O error: {}", e),
             NetEmulatorError::GenericError(msg) => write!(f, "Network emulator error: {}", msg),
-            NetEmulatorError::PollingError(e) => write!(f, "Network emulator polling error: {}", e),
             NetEmulatorError::ChannelError(e) => write!(f, "Network emulator channel error: {}", e),
         }
     }
@@ -37,31 +30,23 @@ impl Error for NetEmulatorError {
     fn source(&self) -> Option<&(dyn Error + 'static)> {
         match self {
             NetEmulatorError::IoError(e) => Some(e),
-            NetEmulatorError::PollingError(e) => Some(e),
             NetEmulatorError::ChannelError(e) => Some(e),
             _ => None,
         }
     }
 }
 
-// Implement From conversions for easier error propagation
 impl From<io::Error> for NetEmulatorError {
     fn from(err: io::Error) -> Self {
         NetEmulatorError::IoError(err)
     }
 }
 
-impl From<polling::Error> for NetEmulatorError {
-    fn from(err: polling::Error) -> Self {
-        NetEmulatorError::PollingError(err)
+impl From<mpsc::SendError<()>> for NetEmulatorError {
+    fn from(err: mpsc::SendError<()>) -> Self {
+        NetEmulatorError::ChannelError(err)
     }
 }
-
-impl From<mpsc::SendError<()>> for NetEmulatorError {
-     fn from(err: mpsc::SendError<()>) -> Self {
-         NetEmulatorError::ChannelError(err)
-     }
- }
 
 
 /// Represents a network emulator for relaying UDP packets between game instances.
@@ -143,131 +128,96 @@ impl NetEmulator {
         self.stop_tx = Some(stop_tx);
 
         let relay_thread = thread::spawn(move || {
-            let mut buf = [0; 65507]; // Maximum theoretical UDP packet size
+            let mut buf = [0; 65507];
 
-            // Create a poller instance
-            let poller = polling::Poller::new().map_err(NetEmulatorError::PollingError)?;
-            let mut event_queue = polling::Events::new(); // Event queue for polling results
+            let poller = polling::Poller::new()?;
+            let mut event_queue = polling::Events::new();
 
-            // Register all instance sockets with the poller
-            { // Use a block to drop the read lock on sockets quickly
+            // Register all instance sockets with the poller. `add` requires a raw
+            // source; callers must guarantee the source outlives the poller, which
+            // holds here because the sockets live in the Arc<RwLock> we cloned.
+            {
                 let sockets_read = sockets.read().unwrap();
                 for (instance_id, socket) in sockets_read.iter() {
-                    // Register the socket for readable events
-                    poller.add(socket, polling::Event::readable(*instance_id as usize)).map_err(NetEmulatorError::PollingError)?;
+                    unsafe {
+                        poller.add(socket, polling::Event::readable(*instance_id as usize))?;
+                    }
                     debug!("Registered socket for instance {} with poller.", instance_id);
                 }
-            } // Drop the read lock
+            }
 
             info!("Network relay thread started.");
 
             loop {
-                // Check for stop signal from the main thread
                 match stop_rx.try_recv() {
                     Ok(_) | Err(TryRecvError::Disconnected) => {
                         info!("Stop signal received. Stopping network packet relay thread.");
-                        break; // Exit the loop to stop the thread
+                        break;
                     }
-                    Err(TryRecvError::Empty) => {
-                        // No stop signal, continue
-                    }
+                    Err(TryRecvError::Empty) => {}
                 }
 
-                // Wait for events on registered sockets with a timeout to check the stop channel periodically
-                // A small timeout prevents busy-waiting but allows responsiveness to stop signals.
                 match poller.wait(&mut event_queue, Some(Duration::from_millis(100))) {
-                    Ok(num_events) => {
-                        // Process events
-                        for i in 0..num_events {
-                            let event = event_queue.get(i).unwrap();
-                            let instance_id = event.key as u8; // The key is the instance ID
-
+                    Ok(_) => {
+                        for event in event_queue.iter() {
+                            let instance_id = event.key as u8;
                             debug!("Received polling event for instance {}", instance_id);
 
-                            // Get the socket for this instance (acquire read lock)
                             let sockets_read = sockets.read().unwrap();
                             if let Some(socket) = sockets_read.get(&instance_id) {
-                                // Attempt to receive packets from the non-blocking socket in a loop
-                                // as multiple packets might be available.
                                 loop {
                                     match socket.recv_from(&mut buf) {
                                         Ok((size, src)) => {
                                             debug!("Received {} bytes from {} on socket for instance {}", size, src, instance_id);
 
-                                            // Find the destination based on the mapping (acquire read lock on mappings)
                                             let mappings_read = mappings.read().unwrap();
                                             let dst_option = mappings_read.get(&src).cloned();
-                                            drop(mappings_read); // Drop the read lock on mappings
+                                            drop(mappings_read);
 
                                             if let Some(dst) = dst_option {
                                                 debug!("Forwarding {} bytes from {} to {} (instance {})", size, src, dst, instance_id);
-                                                // Send the packet to the destination
                                                 if let Err(e) = socket.send_to(&buf[..size], dst) {
-                                                    // Log send errors, but don't stop the relay for this socket
                                                     error!("Failed to send {} bytes to {} for instance {}: {}", size, dst, instance_id, e);
                                                 } else {
-                                                     debug!("Forwarded {} bytes successfully.", size);
+                                                    debug!("Forwarded {} bytes successfully.", size);
                                                 }
                                             } else {
                                                 debug!("No mapping found for source address {} (instance {}). Packet dropped.", src, instance_id);
-                                                // Packet is dropped if no mapping exists
                                             }
                                         }
                                         Err(ref e) if e.kind() == io::ErrorKind::WouldBlock => {
-                                            // No more packets available to read from this socket right now
                                             debug!("Socket for instance {} is non-blocking and reported WouldBlock.", instance_id);
-                                            break; // Exit the inner loop for this socket
+                                            break;
                                         }
                                         Err(e) => {
-                                            // Handle other receive errors (e.g., socket closed, network issues)
                                             error!("Error receiving from socket for instance {}: {}", instance_id, e);
-                                            // Depending on the error, you might want to deregister the socket
-                                            // or stop the relay thread if it's a critical error.
-                                            // For now, we just log and continue checking other sockets.
-                                            break; // Exit the inner loop for this socket on error
+                                            break;
                                         }
                                     }
-                                } // End of inner recv_from loop
+                                }
 
-                                // Re-register the socket after handling events, as some polling mechanisms
-                                // require this to continue receiving events.
-                                // Ensure the socket is still valid before re-registering.
-                                 if let Some(valid_socket) = sockets_read.get(&instance_id) {
-                                      if let Err(e) = poller.modify(valid_socket, polling::Event::readable(*instance_id as usize)) {
-                                           // Log error if re-registration fails (e.g., socket is no longer valid)
-                                           error!("Failed to re-register socket for instance {} with poller: {}", instance_id, e);
-                                           // Depending on the error, you might want to try removing it from the poller
-                                           // or assume the instance/socket is gone.
-                                      }
-                                 } else {
-                                      // The socket might have been removed from the map (e.g., instance stopped)
-                                      debug!("Socket for instance {} not found in map during re-registration.", instance_id);
-                                      // Consider cleaning up the poller registration for this instance ID here.
-                                 }
-
+                                // Re-arm oneshot interest so future packets keep waking the poller.
+                                if let Err(e) = poller.modify(socket, polling::Event::readable(instance_id as usize)) {
+                                    error!("Failed to re-register socket for instance {} with poller: {}", instance_id, e);
+                                }
                             } else {
-                                // Should not happen if instance_id comes from poller events based on sockets map
                                 error!("Internal error: Socket for instance ID {} not found in map after polling event.", instance_id);
                             }
-                             drop(sockets_read); // Drop the read lock on sockets
-                        } // End of processing polling events
+                            drop(sockets_read);
+                        }
                     }
                     Err(ref e) if e.kind() == io::ErrorKind::WouldBlock => {
-                         // Poller timed out, or no events occurred. Continue the loop to check stop signal.
-                         debug!("Poller wait timed out or no events.");
+                        debug!("Poller wait timed out or no events.");
                     }
                     Err(e) => {
-                        // Handle polling errors
                         error!("Polling error in network relay thread: {}", e);
-                        // Depending on the error, you might break the loop or try to recover
-                        return Err(NetEmulatorError::PollingError(e)); // Return the error to the main thread
+                        return Err(NetEmulatorError::IoError(e));
                     }
-                } // End of poller.wait match
-            } // End of main relay loop
+                }
+            }
 
-             // Clean up poller resources (poller is dropped when the thread exits)
             info!("Network relay thread stopped gracefully.");
-             Ok(()) // Return Ok on successful stop
+            Ok(())
         });
 
         self.relay_thread = Some(relay_thread);
