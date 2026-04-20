@@ -1,29 +1,31 @@
 use x11rb::connection::Connection;
-use x11rb::protocol::xproto::{self, ConnectionExt};
+use x11rb::protocol::xproto::{self, AtomEnum, ConfigureWindowAux, ConnectionExt, PropMode};
 use x11rb::rust_connection::RustConnection;
+use x11rb::errors::{ConnectError, ConnectionError, ReplyError};
 use std::error::Error;
-use log::{info, error, warn, debug}; // Import debug
+use log::{info, error, warn, debug};
 use std::sync::Arc;
-use x11rb::errors::ReplyError;
-use std::time::{Duration, Instant}; // Import Instant
+use std::time::{Duration, Instant};
 use std::thread;
-use std::collections::{HashMap, HashSet}; // Import HashMap and HashSet
+use std::collections::{HashMap, HashSet};
 
 // Custom error type for window management operations
 #[derive(Debug)]
 pub enum WindowManagerError {
-    X11rbError(x11rb::errors::ConnectionError),
+    X11rbConnectError(ConnectError),
+    X11rbError(ConnectionError),
     X11rbReplyError(ReplyError),
     PropertyNotFound(xproto::Window, xproto::Atom),
     InvalidPropertyData(xproto::Window, xproto::Atom),
     MonitorDetectionError(String),
-    WindowNotFound(Vec<u32>), // Include the PIDs that were not found
+    WindowNotFound(Vec<u32>),
     GenericError(String),
 }
 
 impl std::fmt::Display for WindowManagerError {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
         match self {
+            WindowManagerError::X11rbConnectError(e) => write!(f, "X11 connect error: {}", e),
             WindowManagerError::X11rbError(e) => write!(f, "X11 connection error: {}", e),
             WindowManagerError::X11rbReplyError(e) => write!(f, "X11 reply error: {}", e),
             WindowManagerError::PropertyNotFound(window, atom) => {
@@ -44,6 +46,7 @@ impl std::fmt::Display for WindowManagerError {
 impl Error for WindowManagerError {
     fn source(&self) -> Option<&(dyn Error + 'static)> {
         match self {
+            WindowManagerError::X11rbConnectError(e) => Some(e),
             WindowManagerError::X11rbError(e) => Some(e),
             WindowManagerError::X11rbReplyError(e) => Some(e),
             _ => None,
@@ -51,8 +54,14 @@ impl Error for WindowManagerError {
     }
 }
 
-impl From<x11rb::errors::ConnectionError> for WindowManagerError {
-    fn from(err: x11rb::errors::ConnectionError) -> Self {
+impl From<ConnectError> for WindowManagerError {
+    fn from(err: ConnectError) -> Self {
+        WindowManagerError::X11rbConnectError(err)
+    }
+}
+
+impl From<ConnectionError> for WindowManagerError {
+    fn from(err: ConnectionError) -> Self {
         WindowManagerError::X11rbError(err)
     }
 }
@@ -82,18 +91,17 @@ impl WindowManager {
         let setup = self.conn.setup();
         let screen = &setup.roots[0];
 
-        let pid_atom_request = self.conn.intern_atom(false, "_NET_WM_PID");
+        let pid_atom_request = self.conn.intern_atom(false, b"_NET_WM_PID");
         let windows_request = self.conn.query_tree(screen.root);
 
         let pid_atom = pid_atom_request?.reply()?.atom;
         let windows = windows_request?.reply()?.children;
 
         for window in windows {
-            // Use `get_property_reply` to avoid blocking the loop unnecessarily if a property request fails
-            let pid_prop_reply = self.conn.get_property(false, window, pid_atom, xproto::ATOM_CARDINAL, 0, 1)?.reply()?;
-            if let Some(pid_prop_value) = pid_prop_reply.value {
-                // _NET_WM_PID is a CARDINAL (u32)
-                if pid_prop_value.len() == 4 { // Check if the property value has the expected size for a u32
+            let pid_prop_reply = self.conn.get_property(false, window, pid_atom, AtomEnum::CARDINAL, 0, 1)?.reply()?;
+            let pid_prop_value = &pid_prop_reply.value;
+            if !pid_prop_value.is_empty() {
+                if pid_prop_value.len() == 4 {
                     let window_pid = u32::from_ne_bytes([
                         pid_prop_value[0],
                         pid_prop_value[1],
@@ -106,7 +114,7 @@ impl WindowManager {
                         return Ok(Some(window));
                     }
                 } else {
-                     debug!("Window {} has _NET_WM_PID property with unexpected size: {}", window, pid_prop_value.len());
+                    debug!("Window {} has _NET_WM_PID property with unexpected size: {}", window, pid_prop_value.len());
                 }
             }
         }
@@ -119,16 +127,16 @@ impl WindowManager {
     /// Less reliable than finding by PID.
     /// Returns Ok(Some(window)) if found, Ok(None) if not found, and Err on X11 error.
     pub fn find_window_by_title(&self, title: &str) -> Result<Option<xproto::Window>, WindowManagerError> {
-         debug!("Attempting to find window with title: {}", title);
+        debug!("Attempting to find window with title: {}", title);
         let setup = self.conn.setup();
         let screen = &setup.roots[0];
         let windows = self.conn.query_tree(screen.root)?.reply()?.children;
 
         for window in windows {
-            let name_reply = self.conn.get_property(false, window, xproto::ATOM_WM_NAME, xproto::ATOM_STRING, 0, 1024)?.reply()?;
-            if let Some(name_value) = name_reply.value {
-                if let Ok(name_str) = String::from_utf8(name_value) {
-                     debug!("Found window {} with title: {}", window, name_str.trim());
+            let name_reply = self.conn.get_property(false, window, AtomEnum::WM_NAME, AtomEnum::STRING, 0, 1024)?.reply()?;
+            if !name_reply.value.is_empty() {
+                if let Ok(name_str) = String::from_utf8(name_reply.value) {
+                    debug!("Found window {} with title: {}", window, name_str.trim());
                     if name_str.trim() == title {
                         info!("Matched window {} with target title: {}", window, title);
                         return Ok(Some(window));
@@ -137,28 +145,22 @@ impl WindowManager {
             }
         }
 
-         debug!("No window found with title: {}", title);
+        debug!("No window found with title: {}", title);
         Ok(None)
     }
 
 
     pub fn resize_window(&self, window: xproto::Window, width: u32, height: u32) -> Result<(), WindowManagerError> {
         info!("Resizing window {} to {}x{}", window, width, height);
-        self.conn.configure_window(window, &[
-            xproto::ConfigWindow::Width(width),
-            xproto::ConfigWindow::Height(height),
-        ])?.check()?; // Use check() to ensure the request was successful
-         // No flush here, defer to the end of set_layout for batching
+        let aux = ConfigureWindowAux::new().width(width).height(height);
+        self.conn.configure_window(window, &aux)?.check()?;
         Ok(())
     }
 
     pub fn move_window(&self, window: xproto::Window, x: i32, y: i32) -> Result<(), WindowManagerError> {
         info!("Moving window {} to ({}, {})", window, x, y);
-        self.conn.configure_window(window, &[
-            xproto::ConfigWindow::X(x),
-            xproto::ConfigWindow::Y(y),
-        ])?.check()?; // Use check() to ensure the request was successful
-         // No flush here, defer to the end of set_layout for batching
+        let aux = ConfigureWindowAux::new().x(x).y(y);
+        self.conn.configure_window(window, &aux)?.check()?;
         Ok(())
     }
 
@@ -168,35 +170,22 @@ impl WindowManager {
     /// or influencing the window type, or potentially sending client messages.
     pub fn remove_decorations(&self, window: xproto::Window) -> Result<(), WindowManagerError> {
         info!("Attempting to remove decorations from window {}", window);
-        let atom = self.conn.intern_atom(false, "_MOTIF_WM_HINTS")?.reply()?.atom;
+        let atom = self.conn.intern_atom(false, b"_MOTIF_WM_HINTS")?.reply()?.atom;
 
-        // _MOTIF_WM_HINTS format (from Motif Window Manager Hints):
-        // flags       (32-bit)
-        // functions   (32-bit)
-        // decorations (32-bit)
-        // input_mode  (32-bit)
-        // status      (32-bit)
-        // We set decorations to 0 (MWM_DECOR_NONE)
-        let mut data = vec![0u32; 5];
-        let MWM_HINTS_DECORATIONS = 1 << 1; // Flag to indicate decorations field is set
-        data[0] = MWM_HINTS_DECORATIONS;
-        data[2] = 0; // MWM_DECOR_NONE
-
-        // The property value needs to be in bytes, CARDINAL format (32-bit unsigned integer)
-        let data_bytes: Vec<u8> = data.iter()
-            .flat_map(|&val| val.to_ne_bytes().into_iter())
-            .collect();
-
+        // _MOTIF_WM_HINTS layout: flags, functions, decorations, input_mode, status (5 x u32).
+        const MWM_HINTS_DECORATIONS: u32 = 1 << 1;
+        let data: [u32; 5] = [MWM_HINTS_DECORATIONS, 0, 0, 0, 0];
+        let data_bytes: Vec<u8> = data.iter().flat_map(|&v| v.to_ne_bytes()).collect();
 
         self.conn.change_property(
-            xproto::PropMode::Replace,
+            PropMode::REPLACE,
             window,
             atom,
-            xproto::ATOM_CARDINAL,
-            32, // Format: 32-bit
+            AtomEnum::CARDINAL,
+            32,
+            data.len() as u32,
             &data_bytes,
         )?.check()?;
-         // No flush here, defer to the end of set_layout for batching
         info!("Sent request to remove decorations for window {}", window);
         Ok(())
     }
@@ -252,7 +241,7 @@ impl WindowManager {
              let mut found_in_this_pass = Vec::new(); // PIDs found in the current iteration
 
              // Iterate over a drained list to avoid modifying the set while iterating
-             for pid in unfound_pids.drain(..).collect::<Vec<_>>() {
+             for pid in unfound_pids.drain().collect::<Vec<_>>() {
                  match self.find_window_by_pid(pid) {
                      Ok(Some(window_id)) => {
                          info!("Successfully found window {} for PID {}", window_id, pid);
@@ -292,89 +281,64 @@ impl WindowManager {
 
          // Now apply the layout using the found window IDs.
          // Ensure the order matches the original window_pids slice.
-         let mut ordered_windows: Vec<(u32, xproto::Window)> = window_pids.iter()
+         let ordered_windows: Vec<(u32, xproto::Window)> = window_pids.iter()
              .filter_map(|&pid| found_windows.get(&pid).map(|&window| (pid, window)))
              .collect();
-
-         // The filter_map preserves the order of window_pids
 
          let num_windows = ordered_windows.len();
          let num_monitors = monitors.len();
 
-         // Calculate layout parameters within the assigned monitor
-         // This logic needs to be more sophisticated for complex layouts and monitor setups.
-         // For simplicity, we distribute windows round-robin across monitors
-         // and tile them within each monitor based on the layout.
-
+         // Round-robin windows across monitors, then tile within each monitor.
          for (window_index, (pid, window_id)) in ordered_windows.iter().enumerate() {
              let monitor_index = window_index % num_monitors;
              let monitor = &monitors[monitor_index];
+             // index_on_monitor: 0-based slot for this window within its assigned monitor.
+             let index_on_monitor = window_index / num_monitors;
+             // Total windows assigned to this monitor under round-robin distribution.
+             let windows_on_monitor = (num_windows + num_monitors - 1 - monitor_index) / num_monitors;
 
-             // Simple tiling logic within the assigned monitor
-             let (x, y, width, height) = match layout {
+             let (x, y, width, height): (i32, i32, u32, u32) = match &layout {
                  Layout::Horizontal => {
-                     let num_windows_on_this_monitor = num_windows / num_monitors + (if monitor_index < num_windows % num_monitors { 1 } else { 0 });
-                     let index_on_monitor = window_index / num_monitors; // Incorrect index calculation for horizontal
-                     // Corrected index calculation for horizontal tiling within a monitor
-                     let index_on_monitor = ordered_windows.iter().take(window_index)
-                         .filter(|(_, &w)| {
-                             let monitor_idx_for_w = ordered_windows.iter().position(|&(_, inner_w)| inner_w == w).unwrap() % num_monitors;
-                             monitor_idx_for_w == monitor_index
-                         })
-                         .count();
-
-
-                     let single_window_width = monitor.width / num_windows_on_this_monitor as i32;
-                     let x_offset = index_on_monitor as i32 * single_window_width;
-                     (monitor.x + x_offset, monitor.y, single_window_width, monitor.height)
+                     let single_width = monitor.width / windows_on_monitor.max(1) as i32;
+                     let x_offset = index_on_monitor as i32 * single_width;
+                     (monitor.x + x_offset, monitor.y, single_width as u32, monitor.height as u32)
                  }
                  Layout::Vertical => {
-                     let num_windows_on_this_monitor = num_windows / num_monitors + (if monitor_index < num_windows % num_monitors { 1 } else { 0 });
-                     // Corrected index calculation for vertical tiling within a monitor
-                      let index_on_monitor = ordered_windows.iter().take(window_index)
-                         .filter(|(_, &w)| {
-                             let monitor_idx_for_w = ordered_windows.iter().position(|(_, &inner_w)| inner_w == w).unwrap_or(0) % num_monitors;
-                             monitor_idx_for_w == monitor_index
-                         })
-                         .count();
-
-                     let single_window_height = monitor.height / num_windows_on_this_monitor as i32;
-                     let y_offset = index_on_monitor as i32 * single_window_height;
-                     (monitor.x, monitor.y + y_offset, monitor.width, single_window_height)
+                     let single_height = monitor.height / windows_on_monitor.max(1) as i32;
+                     let y_offset = index_on_monitor as i32 * single_height;
+                     (monitor.x, monitor.y + y_offset, monitor.width as u32, single_height as u32)
                  }
                  Layout::Grid2x2 => {
                      let grid_x = window_index % 2;
-                     let grid_y = window_index / 2;
+                     let grid_y = (window_index / 2) % 2;
                      let cell_width = monitor.width / 2;
                      let cell_height = monitor.height / 2;
                      let x = monitor.x + (grid_x as i32 * cell_width);
                      let y = monitor.y + (grid_y as i32 * cell_height);
-                     (x, y, cell_width, cell_height)
+                     (x, y, cell_width as u32, cell_height as u32)
                  }
                  Layout::Grid3x1 => {
                      let cell_width = monitor.width / 3;
-                     let x = monitor.x + (window_index as i32 * cell_width);
-                     (x, monitor.y, cell_width, monitor.height)
+                     let x = monitor.x + ((window_index % 3) as i32 * cell_width);
+                     (x, monitor.y, cell_width as u32, monitor.height as u32)
                  }
                  Layout::Custom(rects) => {
                      if let Some(rect) = rects.get(window_index) {
                          let target_monitor = monitors.get(rect.monitor_index).unwrap_or(monitor);
                          (target_monitor.x + rect.x, target_monitor.y + rect.y, rect.width, rect.height)
                      } else {
-                         // Fallback to horizontal if custom rect not available
-                         let single_window_width = monitor.width / num_windows as i32;
-                         let x_offset = window_index as i32 * single_window_width;
-                         (monitor.x + x_offset, monitor.y, single_window_width, monitor.height)
+                         let single_width = monitor.width / num_windows.max(1) as i32;
+                         let x_offset = window_index as i32 * single_width;
+                         (monitor.x + x_offset, monitor.y, single_width as u32, monitor.height as u32)
                      }
                  }
              };
 
              info!("Applying layout for window {} (PID {}): monitor index {}, x={}, y={}, width={}, height={}", window_id, pid, monitor_index, x, y, width, height);
 
-             // Apply transformations
              self.move_window(*window_id, x, y)?;
-             self.resize_window(*window_id, width as u32, height as u32)?;
-             self.remove_decorations(*window_id)?; // Optional: Remove decorations
+             self.resize_window(*window_id, width, height)?;
+             self.remove_decorations(*window_id)?;
          }
 
          self.conn.flush()?; // Ensure all requests are sent after all operations
@@ -388,33 +352,30 @@ impl WindowManager {
      fn get_monitors(&self) -> Result<Vec<Monitor>, WindowManagerError> {
          info!("Attempting to get monitor information using _NET_WORKAREA");
          let root = self.conn.setup().roots[0].root;
-         let atom = self.conn.intern_atom(false, "_NET_WORKAREA")?.reply()?.atom;
-         let reply = self.conn.get_property(false, root, atom, xproto::ATOM_CARDINAL, 0, u32::MAX)?.reply()?; // Get the full property value
+         let atom = self.conn.intern_atom(false, b"_NET_WORKAREA")?.reply()?.atom;
+         let reply = self.conn.get_property(false, root, atom, AtomEnum::CARDINAL, 0, u32::MAX)?.reply()?;
+         let value = reply.value;
 
-         if let Some(value) = reply.value {
-             // _NET_WORKAREA is a list of CARDINALs (u32) in groups of 4: x, y, width, height
-             if value.len() % 16 != 0 || value.is_empty() { // 4 u32s = 16 bytes
-                 error!("_NET_WORKAREA property has unexpected size or is empty: {} bytes. Expected a non-zero multiple of 16.", value.len());
-                  return Err(WindowManagerError::InvalidPropertyData(root, atom));
-             }
-
-             let mut monitors = Vec::new();
-             // Process the bytes in chunks of 16 (4 u32s)
-             for (i, chunk) in value.chunks_exact(16).enumerate() {
-                 let x = u32::from_ne_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]) as i32;
-                 let y = u32::from_ne_bytes([chunk[4], chunk[5], chunk[6], chunk[7]]) as i32;
-                 let width = u32::from_ne_bytes([chunk[8], chunk[9], chunk[10], chunk[11]]) as i32;
-                 let height = u32::from_ne_bytes([chunk[12], chunk[13], chunk[14], chunk[15]]) as i32;
-                 monitors.push(Monitor { x, y, width, height });
-                  info!("Detected monitor {}: x={}, y={}, width={}, height={}", i, x, y, width, height);
-             }
-              info!("Detected {} monitors based on _NET_WORKAREA.", monitors.len());
-             return Ok(monitors);
+         if value.is_empty() {
+             error!("_NET_WORKAREA property not found or is empty.");
+             return Err(WindowManagerError::MonitorDetectionError("_NET_WORKAREA property not available".to_string()));
+         }
+         if value.len() % 16 != 0 {
+             error!("_NET_WORKAREA property has unexpected size: {} bytes. Expected a multiple of 16.", value.len());
+             return Err(WindowManagerError::InvalidPropertyData(root, atom));
          }
 
-         // If the property is not found or empty (value is None)
-          error!("_NET_WORKAREA property not found or is empty (value is None).");
-         Err(WindowManagerError::MonitorDetectionError("_NET_WORKAREA property not available".to_string()))
+         let mut monitors = Vec::new();
+         for (i, chunk) in value.chunks_exact(16).enumerate() {
+             let x = u32::from_ne_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]) as i32;
+             let y = u32::from_ne_bytes([chunk[4], chunk[5], chunk[6], chunk[7]]) as i32;
+             let width = u32::from_ne_bytes([chunk[8], chunk[9], chunk[10], chunk[11]]) as i32;
+             let height = u32::from_ne_bytes([chunk[12], chunk[13], chunk[14], chunk[15]]) as i32;
+             monitors.push(Monitor { x, y, width, height });
+             info!("Detected monitor {}: x={}, y={}, width={}, height={}", i, x, y, width, height);
+         }
+         info!("Detected {} monitors based on _NET_WORKAREA.", monitors.len());
+         Ok(monitors)
      }
 }
 

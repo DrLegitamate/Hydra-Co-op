@@ -33,6 +33,18 @@ impl std::error::Error for AdaptiveConfigError {
     }
 }
 
+impl From<std::io::Error> for AdaptiveConfigError {
+    fn from(e: std::io::Error) -> Self {
+        AdaptiveConfigError::Io(e)
+    }
+}
+
+impl From<HydraError> for AdaptiveConfigError {
+    fn from(e: HydraError) -> Self {
+        AdaptiveConfigError::Other(e.to_string())
+    }
+}
+
 /// Adaptive configuration that learns from successful game launches
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AdaptiveConfig {
