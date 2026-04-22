@@ -23,13 +23,12 @@ use gtk::pango;
 use gtk::prelude::*;
 use gtk::{
     Align, Application, ApplicationWindow, Box as GtkBox, Button, CheckButton, ComboBoxText,
-    CssProvider, FileChooserAction, FileChooserDialog, Frame, Grid, HeaderBar, Label, MessageDialog,
+    CssProvider, FileChooserAction, FileChooserDialog, Frame, HeaderBar, Label, MessageDialog,
     MessageType, Orientation, PolicyType, ResponseType, ScrolledWindow, Separator, Spinner,
     TextBuffer, TextView, ToggleButton,
 };
 use log::{error, info};
 
-use crate::adaptive_config::AdaptiveConfigManager;
 use crate::config::Config;
 use crate::input_mux::{DeviceIdentifier, InputAssignment};
 use crate::run_core_logic;
@@ -51,7 +50,6 @@ struct GuiState {
     status_label: Label,
     status_spinner: Spinner,
     log_buffer: TextBuffer,
-    adaptive_config: RefCell<Option<AdaptiveConfigManager>>,
 }
 
 /// The three layout-mode toggle buttons grouped together.
@@ -94,17 +92,15 @@ impl LayoutToggle {
 pub fn run_gui(
     available_devices: Vec<DeviceIdentifier>,
     initial_config: Config,
-    adaptive_config: Option<AdaptiveConfigManager>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let app = Application::new(Some("com.hydra.coop.launcher"), Default::default());
 
     let devices = Rc::new(available_devices);
     let initial_config = Rc::new(initial_config);
-    let adaptive = Rc::new(RefCell::new(adaptive_config));
 
     app.connect_activate(move |app| {
         load_custom_css();
-        let state = build_main_window(app, &devices, &initial_config, adaptive.borrow_mut().take());
+        let state = build_main_window(app, &devices, &initial_config);
         populate_from_config(&state, &initial_config);
         wire_signals(state.clone());
         state.window.present();
@@ -130,7 +126,6 @@ fn build_main_window(
     app: &Application,
     devices: &Rc<Vec<DeviceIdentifier>>,
     initial_config: &Config,
-    adaptive_config: Option<AdaptiveConfigManager>,
 ) -> Rc<GuiState> {
     let window = ApplicationWindow::new(app);
     window.set_title(Some("Hydra Co-op Launcher"));
@@ -200,7 +195,6 @@ fn build_main_window(
         status_label,
         status_spinner,
         log_buffer,
-        adaptive_config: RefCell::new(adaptive_config),
     });
 
     // Wire browse separately so we can return the Rc cleanly.
@@ -545,7 +539,6 @@ fn on_launch_clicked(state: &Rc<GuiState>) {
                 layout,
                 use_proton,
                 &config,
-                None,
             );
             match result {
                 Ok((mut net, mut mux, mut launcher)) => {

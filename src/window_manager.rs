@@ -15,11 +15,9 @@ pub enum WindowManagerError {
     X11rbConnectError(ConnectError),
     X11rbError(ConnectionError),
     X11rbReplyError(ReplyError),
-    PropertyNotFound(xproto::Window, xproto::Atom),
     InvalidPropertyData(xproto::Window, xproto::Atom),
     MonitorDetectionError(String),
     WindowNotFound(Vec<u32>),
-    GenericError(String),
 }
 
 impl std::fmt::Display for WindowManagerError {
@@ -28,9 +26,6 @@ impl std::fmt::Display for WindowManagerError {
             WindowManagerError::X11rbConnectError(e) => write!(f, "X11 connect error: {}", e),
             WindowManagerError::X11rbError(e) => write!(f, "X11 connection error: {}", e),
             WindowManagerError::X11rbReplyError(e) => write!(f, "X11 reply error: {}", e),
-            WindowManagerError::PropertyNotFound(window, atom) => {
-                write!(f, "Property not found for window {}: {:?}", window, atom)
-            }
             WindowManagerError::InvalidPropertyData(window, atom) => {
                 write!(f, "Invalid property data for window {}: {:?}", window, atom)
             }
@@ -38,7 +33,6 @@ impl std::fmt::Display for WindowManagerError {
             WindowManagerError::WindowNotFound(pids) => {
                 write!(f, "Window not found for PIDs: {:?}", pids)
             },
-            WindowManagerError::GenericError(msg) => write!(f, "Window manager error: {}", msg),
         }
     }
 }
@@ -122,33 +116,6 @@ impl WindowManager {
         debug!("No window found with PID: {}", pid);
         Ok(None)
     }
-
-    /// Finds a window by its _WM_NAME property (window title).
-    /// Less reliable than finding by PID.
-    /// Returns Ok(Some(window)) if found, Ok(None) if not found, and Err on X11 error.
-    pub fn find_window_by_title(&self, title: &str) -> Result<Option<xproto::Window>, WindowManagerError> {
-        debug!("Attempting to find window with title: {}", title);
-        let setup = self.conn.setup();
-        let screen = &setup.roots[0];
-        let windows = self.conn.query_tree(screen.root)?.reply()?.children;
-
-        for window in windows {
-            let name_reply = self.conn.get_property(false, window, AtomEnum::WM_NAME, AtomEnum::STRING, 0, 1024)?.reply()?;
-            if !name_reply.value.is_empty() {
-                if let Ok(name_str) = String::from_utf8(name_reply.value) {
-                    debug!("Found window {} with title: {}", window, name_str.trim());
-                    if name_str.trim() == title {
-                        info!("Matched window {} with target title: {}", window, title);
-                        return Ok(Some(window));
-                    }
-                }
-            }
-        }
-
-        debug!("No window found with title: {}", title);
-        Ok(None)
-    }
-
 
     pub fn resize_window(&self, window: xproto::Window, width: u32, height: u32) -> Result<(), WindowManagerError> {
         info!("Resizing window {} to {}x{}", window, width, height);
@@ -322,16 +289,6 @@ impl WindowManager {
                      let x = monitor.x + ((window_index % 3) as i32 * cell_width);
                      (x, monitor.y, cell_width as u32, monitor.height as u32)
                  }
-                 Layout::Custom(rects) => {
-                     if let Some(rect) = rects.get(window_index) {
-                         let target_monitor = monitors.get(rect.monitor_index).unwrap_or(monitor);
-                         (target_monitor.x + rect.x, target_monitor.y + rect.y, rect.width, rect.height)
-                     } else {
-                         let single_width = monitor.width / num_windows.max(1) as i32;
-                         let x_offset = window_index as i32 * single_width;
-                         (monitor.x + x_offset, monitor.y, single_width as u32, monitor.height as u32)
-                     }
-                 }
              };
 
              info!("Applying layout for window {} (PID {}): monitor index {}, x={}, y={}, width={}, height={}", window_id, pid, monitor_index, x, y, width, height);
@@ -379,23 +336,12 @@ impl WindowManager {
      }
 }
 
-#[derive(Debug)] // Derive Debug for Layout enum
+#[derive(Debug)]
 pub enum Layout {
     Horizontal,
     Vertical,
     Grid2x2,
     Grid3x1,
-    Custom(Vec<WindowRect>),
-}
-
-#[derive(Debug, Clone)]
-pub struct WindowRect {
-    pub x: i32,
-    pub y: i32,
-    pub width: u32,
-    pub height: u32,
-    pub monitor_index: usize,
-    // Consider adding more layouts like Grid
 }
 
 impl From<&str> for Layout {
