@@ -204,9 +204,10 @@ fn run_cli_mode(matches: &ArgMatches) -> Result<()> {
             .resize(num_instances, "Auto-detect".to_string());
     }
     if config.network_ports.len() < num_instances {
-        let start = config.network_ports.last().copied().unwrap_or(7776) + 1;
-        for i in config.network_ports.len()..num_instances {
-            config.network_ports.push(start + (i - config.network_ports.len()) as u16);
+        let mut next_port = config.network_ports.last().copied().unwrap_or(7776) + 1;
+        while config.network_ports.len() < num_instances {
+            config.network_ports.push(next_port);
+            next_port += 1;
         }
     }
 
