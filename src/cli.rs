@@ -1,6 +1,4 @@
-use clap::{Arg, Command, ArgMatches};
-use std::path::PathBuf; // Keep if you need PathBuf in this module for some reason, but not needed for parsing Vec<&str>
-use log::debug; // Use debug for cli parsing details
+use clap::{Arg, Command};
 
 /// Builds the Clap Command structure for the application.
 pub fn build_cli() -> Command {
@@ -84,19 +82,10 @@ pub fn build_cli() -> Command {
         )
 }
 
-/// Parses the command-line arguments.
-/// Clap's get_matches() will automatically handle help messages and errors
-/// for missing or invalid arguments by printing to stderr and exiting.
-pub fn parse_args() -> ArgMatches {
-    debug!("Parsing command-line arguments...");
-    build_cli().get_matches()
-}
-
 // Test code moved into a test module
 #[cfg(test)]
 mod tests {
     use super::*;
-    use clap::CommandFactory; // Required for Command::command() in tests
 
     // Helper function to get the command name for tests
     fn command_name() -> &'static str {
@@ -114,14 +103,14 @@ mod tests {
     fn test_no_arguments_is_ok() {
         // All CLI args are optional (GUI mode launches with none), so parsing with
         // no args must succeed.
-        let mut cmd = build_cli();
+        let cmd = build_cli();
         let result = cmd.try_get_matches_from(vec![command_name()]);
         assert!(result.is_ok(), "Parsing with no arguments should succeed");
     }
 
      #[test]
     fn test_valid_arguments() {
-        let mut cmd = build_cli();
+        let cmd = build_cli();
         let matches = cmd.try_get_matches_from(vec![
             command_name(),
             "-g", "/path/to/game",
@@ -147,7 +136,7 @@ mod tests {
 
      #[test]
      fn test_invalid_instances() {
-         let mut cmd = build_cli();
+         let cmd = build_cli();
           let result = cmd.try_get_matches_from(vec![
              command_name(),
              "-g", "/path/to/game",
@@ -162,7 +151,7 @@ mod tests {
 
       #[test]
      fn test_invalid_layout() {
-         let mut cmd = build_cli();
+         let cmd = build_cli();
           let result = cmd.try_get_matches_from(vec![
              command_name(),
              "-g", "/path/to/game",
@@ -178,42 +167,3 @@ mod tests {
 
     // Add more tests for various argument combinations and edge cases
 }
-
-// The original main function is for testing the module independently.
-// The actual application's main function is in src/main.rs.
-// #[cfg(not(test))] // Compile this main only when not running tests
-// fn main() {
-//      // Initialize logger if running this module directly for testing
-//      // env_logger::init();
-//     let matches = parse_args();
-
-//      // Example of retrieving values with clap 4.0+
-//      // Use get_one for single values, get_many for multiple values, get_flag for boolean flags
-
-//     let game_executable: Option<&String> = matches.get_one("game_executable");
-//     let instances: Option<&u32> = matches.get_one("instances"); // Assuming value_parser!(u32)
-//     let input_devices: Option<clap::parser::Values<'_, String>> = matches.get_many("input_devices"); // Assuming multiple(true) and default String parsing
-//     let layout: Option<&String> = matches.get_one("layout");
-//     let debug: bool = matches.get_flag("debug");
-
-
-//      // In your actual main.rs, you would use unwrap() or expect() on required arguments
-//      // after calling parse_args(), as clap will exit if they are missing.
-
-//     if debug {
-//         // Logging initialization should be in main.rs
-//         // env::set_var("RUST_LOG", "debug");
-//     } else {
-//         // env::set_var("RUST_LOG", "info");
-//     }
-
-//     debug!("Parsed Arguments:");
-//     debug!("Game Executable: {:?}", game_executable);
-//     debug!("Number of Instances: {:?}", instances);
-//     debug!("Input Devices: {:?}", input_devices.map(|values| values.collect::<Vec<_>>()));
-//     debug!("Layout: {:?}", layout);
-//     debug!("Debug Mode: {}", debug);
-
-//      // Note: The main function in cli.rs should ideally just test the parsing logic,
-//      // not perform application setup like logging.
-// }

@@ -18,8 +18,6 @@ use serde::{Deserialize, Serialize};
 pub enum InputMuxError {
     IoError(io::Error),
     EvdevError(evdev::Error),
-    DeviceNotFound(String),
-    MissingDeviceInfo,
     GenericError(String),
     AlreadyRunning,
 }
@@ -29,8 +27,6 @@ impl std::fmt::Display for InputMuxError {
         match self {
             InputMuxError::IoError(e) => write!(f, "I/O error: {}", e),
             InputMuxError::EvdevError(e) => write!(f, "evdev error: {}", e),
-            InputMuxError::DeviceNotFound(name) => write!(f, "Input device not found: {}", name),
-            InputMuxError::MissingDeviceInfo => write!(f, "Missing device information"),
             InputMuxError::GenericError(msg) => write!(f, "Input multiplexer error: {}", msg),
             InputMuxError::AlreadyRunning => write!(f, "Input capture is already running"),
         }
@@ -371,31 +367,6 @@ impl InputMux {
     }
 
 
-    /// Maps a physical input device to a specific game instance.
-    /// The device is identified by its name. This function is less robust
-    /// than using `map_device_to_instance_by_identifier` if multiple devices
-    /// share the same name.
-    pub fn map_device_to_instance(&mut self, device_name: &str, instance_index: usize) -> Result<(), InputMuxError> {
-        info!("Attempting to map device '{}' to instance index {} by name.", device_name, instance_index);
-
-        // Find the DeviceIdentifier for the given device name
-        let device_identifier = self.devices.keys()
-            .find(|id| id.name == device_name)
-            .cloned(); // Clone the identifier to use
-
-        match device_identifier {
-            Some(identifier) => {
-                // Delegate to the more robust identifier-based mapping
-                self.map_device_to_instance_by_identifier(identifier, instance_index)
-            }
-            None => {
-                warn!("Physical input device '{}' not found by name. Cannot map to instance {}. Available devices: {:?}", device_name, instance_index, self.devices.keys());
-                Err(InputMuxError::DeviceNotFound(device_name.to_string()))
-            }
-        }
-    }
-
-
     /// Captures events from mapped physical devices and injects them into the
     /// corresponding virtual devices for each instance.
     /// This function spawns a thread for each mapped physical device.
@@ -404,7 +375,7 @@ impl InputMux {
         self.instance_map.clear();
         
         // Process input assignments
-        let mut auto_detect_queue: Vec<DeviceIdentifier> = self.devices.keys().cloned().collect();
+        let auto_detect_queue: Vec<DeviceIdentifier> = self.devices.keys().cloned().collect();
         let mut used_devices: std::collections::HashSet<DeviceIdentifier> = std::collections::HashSet::new();
         
         for &(instance_index, ref assignment) in assignments {
@@ -520,81 +491,18 @@ impl InputMux {
         Ok(())
     }
 
-    /// Get join handle for capture threads (for external thread management)
-    pub fn take_capture_handles(&mut self) -> Option<Vec<JoinHandle<()>>> {
-        self.capture_threads.take()
-    }
-
-    /// Maps a physical input device identifier to a specific game instance index.
-    /// Use this function to set up which device controls which instance.
-    pub fn map_device_to_instance_by_identifier(&mut self, identifier: DeviceIdentifier, instance_index: usize) -> Result<(), InputMuxError> {
-        info!("Mapping device {:?} to instance index {}", identifier, instance_index);
-        if self.devices.contains_key(&identifier) {
-            if self.virtual_devices.contains_key(&instance_index) {
-                let id_for_log = identifier.clone();
-                self.instance_map.insert(identifier, instance_index);
-                info!("Successfully mapped device {:?} to instance {}", id_for_log, instance_index);
-                Ok(())
-            } else {
-                warn!("Virtual device for instance index {} not found. Cannot map device {:?}.", instance_index, identifier);
-                Err(InputMuxError::GenericError(format!("Virtual device for instance {} not found", instance_index)))
-            }
-        } else {
-            warn!("Physical input device {:?} not found among enumerated devices. Cannot map to instance {}. Available devices: {:?}", identifier, instance_index, self.devices.keys());
-            Err(InputMuxError::DeviceNotFound(format!("{:?}", identifier)))
-        }
-    }
-
-    // You might want functions to get available devices and their identifiers
+    /// List of enumerated input devices that are currently available.
     pub fn get_available_devices(&self) -> Vec<DeviceIdentifier> {
         self.devices.keys().cloned().collect()
     }
-
-     /// Gets the identifier for a device by its name. Returns the first match.
-     /// Note: Use `get_available_devices` and match identifiers for robustness.
-     pub fn get_device_identifier_by_name(&self, name: &str) -> Option<DeviceIdentifier> {
-         self.devices.keys().find(|id| id.name == name).cloned()
-     }
-
-    /// Returns the sysfs path component (e.g. `event5`) for a given instance's virtual device.
-    pub fn get_virtual_device_sysname(&self, instance_index: usize) -> Option<String> {
-        self.virtual_devices.get(&instance_index).and_then(|arc| {
-            arc.lock().ok().and_then(|mut dev| {
-                dev.enumerate_dev_nodes_blocking()
-                    .ok()
-                    .and_then(|mut iter| iter.next())
-                    .and_then(|path| {
-                        path.ok()
-                            .and_then(|p| p.file_name().map(|n| n.to_string_lossy().into_owned()))
-                    })
-            })
-        })
-    }
-    
-    /// Get statistics about the input multiplexer
-    pub fn get_stats(&self) -> InputMuxStats {
-        InputMuxStats {
-            total_devices: self.devices.len(),
-            mapped_devices: self.instance_map.len(),
-            virtual_devices: self.virtual_devices.len(),
-            is_running: self.running.load(Ordering::SeqCst),
-        }
-    }
-}
-
-/// Statistics about the input multiplexer
-#[derive(Debug, Clone)]
-pub struct InputMuxStats {
-    pub total_devices: usize,
-    pub mapped_devices: usize,
-    pub virtual_devices: usize,
-    pub is_running: bool,
 }
 
 // Implement Drop to stop capture threads when InputMux goes out of scope
 impl Drop for InputMux {
     fn drop(&mut self) {
-        self.stop_capture();
+        if let Err(e) = self.stop_capture() {
+            warn!("Error stopping input capture during drop: {}", e);
+        }
         info!("InputMux instance dropped.");
     }
 }
@@ -604,9 +512,6 @@ impl Drop for InputMux {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tempfile::tempdir;
-    use std::fs;
-    use env_logger; // Add env_logger = "0.11" to Cargo.toml
 
     // Helper to set up a basic logger for tests
     fn setup_logger() {
@@ -653,7 +558,6 @@ mod tests {
              assert_eq!(input_mux.virtual_devices.len(), num_instances);
              for i in 0..num_instances {
                  assert!(input_mux.virtual_devices.contains_key(&i));
-                 assert!(input_mux.get_virtual_device_sysname(i).is_some());
              }
          }
      }
@@ -679,138 +583,11 @@ mod tests {
          // this test primarily checks the state change and join logic if threads were running.
 
          info!("Calling stop_capture...");
-         input_mux.stop_capture();
+         let _ = input_mux.stop_capture();
          info!("stop_capture finished.");
 
          assert_eq!(input_mux.running.load(Ordering::SeqCst), false);
          assert!(input_mux.capture_threads.is_none()); // Handles should be consumed after joining
      }
 
-     #[test]
-     #[ignore] // Requires root or appropriate permissions for /dev/input
-     fn test_map_device_by_name_and_identifier() {
-         setup_logger();
-         let mut input_mux = InputMux::new();
-
-         // Enumerate devices to populate input_mux.devices
-         if let Err(e) = input_mux.enumerate_devices() {
-             eprintln!("Failed to enumerate devices for mapping test: {}", e);
-             panic!("Failed to enumerate devices for mapping test: {}", e);
-         }
-
-         // Create virtual devices
-         let num_instances = 2;
-         if let Err(e) = input_mux.create_virtual_devices(num_instances) {
-             eprintln!("Failed to create virtual devices for mapping test: {}", e);
-             panic!("Failed to create virtual devices for mapping test: {}", e);
-         }
-
-         let available_devices = input_mux.get_available_devices();
-
-         if available_devices.is_empty() {
-             warn!("No devices available for mapping test. Skipping mapping assertions.");
-             // The test will still pass if no devices are found, as there's nothing to map.
-             // A more robust integration test would require a guaranteed input device.
-         } else {
-             // Test mapping by identifier (most robust)
-             let first_device_identifier = available_devices[0].clone();
-             let map_result_identifier = input_mux.map_device_to_instance_by_identifier(first_device_identifier.clone(), 0);
-             assert!(map_result_identifier.is_ok(), "Failed to map device by identifier: {:?}", map_result_identifier.err());
-             assert_eq!(input_mux.instance_map.get(&first_device_identifier), Some(&0));
-
-             // Test mapping by name (less robust, only works if names are unique or we find the right one)
-             // Use the name of the first device found
-             let device_name = available_devices[0].name.clone();
-             let map_result_name = input_mux.map_device_to_instance(&device_name, 1); // Map the same device by name to instance 1
-
-             if input_mux.devices.keys().filter(|id| id.name == device_name).count() > 1 {
-                  warn!("Multiple devices found with the name '{}'. Mapping by name is ambiguous.", device_name);
-                  // If multiple devices have the same name, map_device_to_instance will map the first one it finds.
-                  // We can't reliably assert which specific device was mapped by name in this case.
-                  // The test should acknowledge this ambiguity or use a test environment with unique names.
-             } else {
-                  assert!(map_result_name.is_ok(), "Failed to map device by name: {:?}", map_result_name.err());
-                  // After mapping by name to instance 1, the map entry for the first device might be updated
-                  // depending on how find().cloned() behaves with duplicates.
-                  // Let's re-check the mapping for the original identifier. It should now point to instance 1.
-                  assert_eq!(input_mux.instance_map.get(&first_device_identifier), Some(&1));
-             }
-
-             // Test mapping a non-existent device by name
-             let map_result_not_found = input_mux.map_device_to_instance("NonExistentDevice", 0);
-             assert!(map_result_not_found.is_err());
-             match map_result_not_found.unwrap_err() {
-                 InputMuxError::DeviceNotFound(name) => assert_eq!(name, "NonExistentDevice"),
-                 other => panic!("Expected DeviceNotFound error, but got {:?}", other),
-             }
-
-              // Test mapping to a non-existent instance index
-              let map_result_no_virtual_device = input_mux.map_device_to_instance_by_identifier(first_device_identifier.clone(), num_instances + 1);
-              assert!(map_result_no_virtual_device.is_err());
-              match map_result_no_virtual_device.unwrap_err() {
-                  InputMuxError::GenericError(msg) => assert!(msg.contains("Virtual device for instance")),
-                  other => panic!("Expected GenericError about virtual device, but got {:?}", other),
-              }
-         }
-     }
 }
-
-// The original main function is for testing the module independently.
-// The actual application's main function is in src/main.rs.
-// #[cfg(not(test))] // Compile this main only when not running tests
-// fn main() {
-//    // Initialize logger if running this module directly for testing
-//    env_logger::init();
-
-//    let mut input_mux = InputMux::new();
-
-//    // Enumerate connected input devices
-//    info!("Running InputMux test main.");
-//    if let Err(e) = input_mux.enumerate_devices() {
-//        eprintln!("Error enumerating devices: {}", e);
-//        return;
-//    }
-
-//    // Define the number of instances you want to simulate
-//    let num_instances = 2;
-
-//    // Create virtual input devices for the instances
-//    if let Err(e) = input_mux.create_virtual_devices(num_instances) {
-//        eprintln!("Error creating virtual devices: {}", e);
-//        return;
-//    }
-
-
-//    // Example mapping: Map the first two found devices to instances 0 and 1
-//    let available_devices = input_mux.get_available_devices();
-//    if available_devices.len() >= num_instances {
-//        for i in 0..num_instances {
-//            let device_identifier = available_devices[i].clone();
-//            if let Err(e) = input_mux.map_device_to_instance_by_identifier(device_identifier, i) {
-//                eprintln!("Error mapping device to instance {}: {}", i, e);
-//            }
-//        }
-//    } else {
-//        warn!("Not enough input devices found ({}) to map to {} instances.", available_devices.len(), num_instances);
-//        // You might want to handle this case, e.g., exit or map only the available devices
-//    }
-
-
-//    // Capture raw input events from each mapped physical device and inject into virtual devices
-//    if let Err(e) = input_mux.capture_events() {
-//        error!("Error during input event capture: {}", e);
-//    }
-
-//    // Keep the main thread alive
-//    info!("Input capture started. Main thread sleeping.");
-//    // In a real application with a GUI, you would typically run the GUI event loop here.
-//    // For this test, we'll just sleep or wait for a signal to stop.
-//    // For demonstration of stopping, you could add a signal handler or a command input.
-
-//    // Example: Sleep for a while then stop capture
-//    thread::sleep(Duration::from_secs(30));
-//    info!("Test duration elapsed. Attempting to stop capture.");
-//    input_mux.stop_capture(); // Stop the capture threads
-
-//    info!("Main thread exiting.");
-// }

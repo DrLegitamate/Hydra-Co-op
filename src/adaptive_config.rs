@@ -1,7 +1,12 @@
 //! Adaptive Configuration System
-//! 
+//!
 //! This module provides runtime adaptation and learning capabilities
-//! to improve game compatibility automatically.
+//! to improve game compatibility automatically.  The module is exposed as a
+//! library API but is not yet wired into the CLI or GUI front-ends; the
+//! `dead_code` allowance below silences the warnings the unused surface
+//! otherwise produces.
+
+#![allow(dead_code)]
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -9,7 +14,7 @@ use std::time::{Duration, SystemTime};
 use serde::{Deserialize, Serialize};
 use log::{info, warn, debug};
 use crate::errors::{HydraError, Result};
-use crate::game_detection::{GameProfile, GameEngine};
+use crate::game_detection::GameProfile;
 
 /// Error type for adaptive configuration operations.
 #[derive(Debug)]
@@ -428,7 +433,7 @@ mod tests {
         
         let profile = GameProfile {
             executable_pattern: "test.exe".to_string(),
-            engine: Some(GameEngine::Unity),
+            engine: Some(crate::game_detection::GameEngine::Unity),
             default_ports: vec![7777],
             default_layout: "horizontal".to_string(),
             multi_instance_support: crate::game_detection::MultiInstanceSupport::Native,

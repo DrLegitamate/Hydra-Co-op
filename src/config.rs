@@ -1,10 +1,9 @@
 use serde::{Deserialize, Serialize};
-use std::io::{self, Read, Write};
+use std::io::{self, Write};
 use std::fs;
 use std::path::{Path, PathBuf};
-use log::{info, warn, error, debug}; // Import log macros
-use std::error::Error; // Import Error trait
-use toml; // Explicitly import toml
+use log::{info, warn, error, debug};
+use std::error::Error;
 
 /// Configuration validation errors
 #[derive(Debug)]
@@ -42,7 +41,6 @@ pub enum ConfigError {
     IoError(io::Error),
     TomlDeError(toml::de::Error),
     TomlSeError(toml::ser::Error),
-    GenericError(String),
     Validation(ValidationError),
 }
 
@@ -52,7 +50,6 @@ impl std::fmt::Display for ConfigError {
             ConfigError::IoError(e) => write!(f, "Configuration I/O error: {}", e),
             ConfigError::TomlDeError(e) => write!(f, "Configuration deserialization error: {}", e),
             ConfigError::TomlSeError(e) => write!(f, "Configuration serialization error: {}", e),
-            ConfigError::GenericError(msg) => write!(f, "Configuration error: {}", msg),
             ConfigError::Validation(e) => write!(f, "Configuration validation error: {}", e),
         }
     }
@@ -65,7 +62,6 @@ impl Error for ConfigError {
             ConfigError::TomlDeError(e) => Some(e),
             ConfigError::TomlSeError(e) => Some(e),
             ConfigError::Validation(e) => Some(e),
-            _ => None,
         }
     }
 }
@@ -206,23 +202,6 @@ impl Config {
         self.input_mappings.len().max(1)
     }
     
-    /// Merge this configuration with another, with the other taking precedence
-    pub fn merge_with(&mut self, other: Config) {
-        if !other.game_paths.is_empty() {
-            self.game_paths = other.game_paths;
-        }
-        if !other.input_mappings.is_empty() {
-            self.input_mappings = other.input_mappings;
-        }
-        if other.window_layout != "horizontal" {
-            self.window_layout = other.window_layout;
-        }
-        if !other.network_ports.is_empty() {
-            self.network_ports = other.network_ports;
-        }
-        // use_proton is always merged
-        self.use_proton = other.use_proton;
-    }
 }
 
 // Test code (add necessary dependencies like tempfile)

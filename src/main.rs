@@ -34,7 +34,6 @@ use std::{env, io, thread};
 use clap::ArgMatches;
 use log::{debug, error, info, warn};
 
-use adaptive_config::AdaptiveConfigManager;
 use config::Config;
 use errors::{HydraError, Result};
 use input_mux::{InputAssignment, InputMux};
@@ -52,7 +51,6 @@ pub(crate) fn run_core_logic(
     layout: Layout,
     use_proton: bool,
     config: &Config,
-    _adaptive_config: Option<&mut AdaptiveConfigManager>,
 ) -> Result<(NetEmulator, InputMux, UniversalLauncher)> {
     if num_instances == 0 {
         return Err(HydraError::validation(
@@ -167,9 +165,9 @@ fn run_gui_mode() -> Result<()> {
     let available_devices = enumerate_input_devices();
     info!("Found {} usable input device(s).", available_devices.len());
 
-    let (config, adaptive_config) = load_configuration();
+    let config = load_configuration();
 
-    gui::run_gui(available_devices, config, adaptive_config)
+    gui::run_gui(available_devices, config)
         .map_err(|e| HydraError::application(format!("GUI failed: {e}")))
 }
 
@@ -194,7 +192,25 @@ fn run_cli_mode(matches: &ArgMatches) -> Result<()> {
         .unwrap_or("horizontal");
     let layout = Layout::from(layout_str);
 
-    let (mut config, mut adaptive_config) = load_configuration();
+    let mut config = load_configuration();
+
+    // Make the config consistent with the CLI inputs before validating. Without
+    // this, first-time CLI runs would fail validation because the default
+    // config has no game_paths, input_mappings for this player count, or ports.
+    config.game_paths = vec![game_executable_path.to_path_buf()];
+    if config.input_mappings.len() < num_instances {
+        config
+            .input_mappings
+            .resize(num_instances, "Auto-detect".to_string());
+    }
+    if config.network_ports.len() < num_instances {
+        let mut next_port = config.network_ports.last().copied().unwrap_or(7776) + 1;
+        while config.network_ports.len() < num_instances {
+            config.network_ports.push(next_port);
+            next_port += 1;
+        }
+    }
+
     config.validate()?;
     let use_proton = matches.get_flag("proton") || config.use_proton;
 
@@ -227,7 +243,6 @@ fn run_cli_mode(matches: &ArgMatches) -> Result<()> {
         layout,
         use_proton,
         &config,
-        adaptive_config.as_mut(),
     )?;
 
     info!("Running. Press Ctrl+C to shut down.");
@@ -259,18 +274,18 @@ fn run_cli_mode(matches: &ArgMatches) -> Result<()> {
     Ok(())
 }
 
-/// Load the main configuration and adaptive-config manager from disk, falling
-/// back to defaults on any non-fatal error.
-fn load_configuration() -> (Config, Option<AdaptiveConfigManager>) {
+/// Load the main configuration from disk, falling back to defaults on any
+/// non-fatal error.
+fn load_configuration() -> Config {
     let config_path = match get_config_path() {
         Ok(p) => p,
         Err(e) => {
             warn!("Could not determine config path: {}. Using defaults.", e);
-            return (Config::default_config(), None);
+            return Config::default_config();
         }
     };
 
-    let config = match Config::load(&config_path) {
+    match Config::load(&config_path) {
         Ok(cfg) => cfg,
         Err(config::ConfigError::IoError(io_err)) if io_err.kind() == io::ErrorKind::NotFound => {
             warn!("Config not found at {}; using defaults.", config_path.display());
@@ -280,18 +295,7 @@ fn load_configuration() -> (Config, Option<AdaptiveConfigManager>) {
             error!("Failed to load config from {}: {}", config_path.display(), e);
             Config::default_config()
         }
-    };
-
-    let adaptive_path = get_adaptive_config_path().ok();
-    let adaptive_config = adaptive_path.and_then(|p| match AdaptiveConfigManager::new(p) {
-        Ok(m) => Some(m),
-        Err(e) => {
-            warn!("Adaptive config disabled: {}", e);
-            None
-        }
-    });
-
-    (config, adaptive_config)
+    }
 }
 
 fn enumerate_input_devices() -> Vec<input_mux::DeviceIdentifier> {
@@ -312,12 +316,6 @@ pub(crate) fn get_config_path() -> Result<PathBuf> {
     let dir = crate::utils::get_config_dir()?;
     crate::utils::ensure_dir_exists(&dir)?;
     Ok(dir.join("config.toml"))
-}
-
-fn get_adaptive_config_path() -> Result<PathBuf> {
-    let dir = crate::utils::get_config_dir()?;
-    crate::utils::ensure_dir_exists(&dir)?;
-    Ok(dir.join("adaptive.toml"))
 }
 
 // Early pass to pick up --debug before the full parser runs (which would

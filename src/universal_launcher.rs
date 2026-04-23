@@ -5,33 +5,10 @@
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Child};
-use std::collections::HashMap;
 use std::fs;
 use log::{info, warn, debug, error};
 use crate::errors::{HydraError, Result};
-use crate::game_detection::{GameDetector, GameProfile, GameConfiguration, WorkingDirStrategy, InstanceSeparation};
-
-/// Error type for universal launcher operations.
-#[derive(Debug)]
-pub enum UniversalLauncherError {
-    Io(std::io::Error),
-    LaunchFailed(String),
-}
-
-impl std::fmt::Display for UniversalLauncherError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            UniversalLauncherError::Io(e) => write!(f, "launcher I/O error: {}", e),
-            UniversalLauncherError::LaunchFailed(msg) => write!(f, "launch failed: {}", msg),
-        }
-    }
-}
-
-impl std::error::Error for UniversalLauncherError {
-    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        if let UniversalLauncherError::Io(e) = self { Some(e) } else { None }
-    }
-}
+use crate::game_detection::{GameConfiguration, GameDetector, InstanceSeparation, WorkingDirStrategy};
 
 /// Universal game launcher that can launch any game with multi-instance support
 pub struct UniversalLauncher {
@@ -44,9 +21,6 @@ pub struct UniversalLauncher {
 pub struct GameInstance {
     pub id: usize,
     pub process: Child,
-    pub working_dir: PathBuf,
-    pub config: GameConfiguration,
-    pub profile: GameProfile,
 }
 
 impl UniversalLauncher {
@@ -81,7 +55,6 @@ impl UniversalLauncher {
             let instance = self.launch_single_instance(
                 executable_path,
                 instance_id,
-                &profile,
                 &config,
                 use_proton,
             )?;
@@ -146,7 +119,6 @@ impl UniversalLauncher {
         &self,
         executable_path: &Path,
         instance_id: usize,
-        profile: &GameProfile,
         config: &GameConfiguration,
         use_proton: bool,
     ) -> Result<GameInstance> {
@@ -181,9 +153,6 @@ impl UniversalLauncher {
         let instance = GameInstance {
             id: instance_id,
             process,
-            working_dir,
-            config: config.clone(),
-            profile: profile.clone(),
         };
 
         info!("Game instance {} launched successfully with PID: {}", instance_id, instance.process.id());
@@ -313,7 +282,7 @@ impl UniversalLauncher {
     }
 
     /// Prepare Proton command for Windows games
-    fn prepare_proton_command(&self, executable_path: &Path, instance_id: usize, working_dir: &Path) -> Result<Command> {
+    fn prepare_proton_command(&self, executable_path: &Path, _instance_id: usize, working_dir: &Path) -> Result<Command> {
         let proton_path = crate::proton_integration::find_proton_path()
             .map_err(|e| HydraError::application(format!("Proton not found: {}", e)))?;
 
@@ -417,48 +386,6 @@ impl UniversalLauncher {
         Ok(())
     }
 
-    /// Get statistics about active instances
-    pub fn get_instance_stats(&self) -> InstanceStats {
-        let mut running_count = 0;
-        let mut total_memory = 0;
-
-        for instance in &self.active_instances {
-            // Check if process is still running (simplified check)
-            running_count += 1;
-            // In a real implementation, you'd get actual memory usage
-            total_memory += 100; // Placeholder
-        }
-
-        InstanceStats {
-            total_instances: self.active_instances.len(),
-            running_instances: running_count,
-            total_memory_mb: total_memory,
-        }
-    }
-
-    /// Stop all running instances
-    pub fn stop_all_instances(&mut self) -> std::result::Result<(), UniversalLauncherError> {
-        info!("Stopping all {} game instances", self.active_instances.len());
-
-        for instance in &mut self.active_instances {
-            if let Err(e) = instance.process.kill() {
-                warn!("Failed to kill instance {}: {}", instance.id, e);
-            } else {
-                info!("Stopped instance {}", instance.id);
-            }
-        }
-
-        self.active_instances.clear();
-        Ok(())
-    }
-}
-
-/// Statistics about running game instances
-#[derive(Debug, Clone)]
-pub struct InstanceStats {
-    pub total_instances: usize,
-    pub running_instances: usize,
-    pub total_memory_mb: u64,
 }
 
 impl Default for UniversalLauncher {
@@ -470,6 +397,7 @@ impl Default for UniversalLauncher {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::HashMap;
     use tempfile::tempdir;
 
     #[test]

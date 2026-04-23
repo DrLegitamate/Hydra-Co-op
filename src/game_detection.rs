@@ -8,8 +8,8 @@ use std::fs;
 use std::io;
 use std::collections::HashMap;
 use serde::{Deserialize, Serialize};
-use log::{info, warn, debug, error};
-use crate::errors::{HydraError, Result};
+use log::{info, debug};
+use crate::errors::Result;
 
 /// Error type for game detection operations.
 #[derive(Debug)]

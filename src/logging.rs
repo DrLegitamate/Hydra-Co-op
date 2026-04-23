@@ -1,6 +1,6 @@
 use log::{LevelFilter, SetLoggerError};
 use std::env;
-use std::time::{SystemTime, UNIX_EPOCH, Duration};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 /// Initialise the logging system.
 ///
@@ -47,49 +47,6 @@ pub fn init() -> Result<(), SetLoggerError> {
             Err(e) => {
                 eprintln!("Could not open log file '{}': {} — logging to stdout only.", path_str, e);
             }
-        }
-    }
-
-    dispatch.apply()
-}
-
-/// Convenience initialiser with an explicit level (ignores `RUST_LOG`).
-/// Also respects `LOG_PATH` for dual output.
-pub fn init_with_level(level: LevelFilter) -> Result<(), SetLoggerError> {
-    let mut dispatch = fern::Dispatch::new()
-        .format(|out, message, record| {
-            let now = SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap_or_else(|_| Duration::from_secs(0));
-
-            let colour = match record.level() {
-                log::Level::Error => "\x1b[31m",
-                log::Level::Warn  => "\x1b[33m",
-                log::Level::Info  => "\x1b[32m",
-                log::Level::Debug => "\x1b[36m",
-                log::Level::Trace => "\x1b[35m",
-            };
-
-            out.finish(format_args!(
-                "[{:05}.{:06}] {}{:5}\x1b[0m [{}] {}",
-                now.as_secs(),
-                now.subsec_micros(),
-                colour,
-                record.level(),
-                record.module_path().unwrap_or("unknown"),
-                message
-            ))
-        })
-        .level(level)
-        .chain(std::io::stdout());
-
-    if let Ok(path_str) = env::var("LOG_PATH") {
-        let log_path = std::path::Path::new(&path_str);
-        if let Some(parent) = log_path.parent() {
-            let _ = std::fs::create_dir_all(parent);
-        }
-        if let Ok(file) = fern::log_file(&path_str) {
-            dispatch = dispatch.chain(file);
         }
     }
 
